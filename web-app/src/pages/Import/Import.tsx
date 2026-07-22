@@ -42,11 +42,10 @@ export default function Import() {
       // Use the global alignment context for background processing indication
       startJob({ bookId, bookTitle: title, progressMsg: "Preparing sync map...", status: 'processing' });
 
-      // We don't use AudioContext here because decoding a 10-hour audio blob
-      // directly to Float32Array causes severe RAM spikes and OOM.
-      // Instead, we pass the file directly to the worker.
-      // The `@xenova/transformers` library contains internal capability to read audio iteratively
-      // if passed a raw blob / URL.
+      // We don't decode the whole audio file at once because decoding a 10-hour
+      // audio blob directly causes severe RAM spikes and OOM.
+      // Instead, we pass the file directly to the worker, which uses ffmpeg.wasm
+      // to chunk-decode the massive file into small 30-second segments.
       // --- NEW IMAGE EXTRACTION LOGIC ---
       // 4. Extract images using our new Rust function
       const rawImages = load_epub_images(bytes); 
