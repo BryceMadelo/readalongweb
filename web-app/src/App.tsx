@@ -7,6 +7,7 @@ import Library from './pages/Library/Library';
 import Import from './pages/Import/Import';
 import Reader from './pages/Reader/Reader';
 import Align from './pages/Align/Align';
+import { AlignmentProvider } from './context/AlignmentContext';
 
 import './index.css';
 
@@ -44,16 +45,18 @@ function App() {
   }
 
   return (
-    <BrowserRouter>
-      <div className="app-container">
-        <Routes>
-          <Route path="/" element={<Library />} />
-          <Route path="/import" element={<Import />} />
-          <Route path="/reader/:id" element={<Reader />} />
-          <Route path="/align/:id" element={<Align />} />
-        </Routes>
-      </div>
-    </BrowserRouter>
+    <AlignmentProvider>
+      <BrowserRouter>
+        <div className="app-container">
+          <Routes>
+            <Route path="/" element={<Library />} />
+            <Route path="/import" element={<Import />} />
+            <Route path="/reader/:id" element={<Reader />} />
+            <Route path="/align/:id" element={<Align />} />
+          </Routes>
+        </div>
+      </BrowserRouter>
+    </AlignmentProvider>
   );
 }
 
