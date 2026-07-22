@@ -6,10 +6,12 @@ pub struct ContentBlock {
     pub tag: String,
     pub text: String,
     pub src: Option<String>,
+    pub needs_review: bool,
 }
 
 /// Parses messy chapter HTML and extracts readable blocks with their IDs.
-pub fn parse_chapter_html(html_content: &str) -> Vec<ContentBlock> {
+/// Filters out clear non-narrative junk paragraphs.
+pub fn parse_chapter_html(html_content: &str, title: Option<&str>, author: Option<&str>) -> Vec<ContentBlock> {
     // scraper's Html::parse_document is highly forgiving of malformed HTML
     let document = Html::parse_document(html_content);
 
@@ -31,6 +33,7 @@ pub fn parse_chapter_html(html_content: &str) -> Vec<ContentBlock> {
                 tag,
                 text: String::new(),
                 src,
+                needs_review: false,
             });
             continue;
         }
@@ -41,6 +44,35 @@ pub fn parse_chapter_html(html_content: &str) -> Vec<ContentBlock> {
 
         // Skip purely empty structural paragraphs
         if text.is_empty() {
+            continue;
+        }
+
+        let lower_text = text.to_lowercase();
+
+        // Obvious junk that will never match narration
+        if lower_text.contains("oceanofpdf.com") ||
+           lower_text.contains("epub r1.0") ||
+           lower_text == "oceanofpdf.com" {
+            continue;
+        }
+
+        let mut needs_review = false;
+
+        // Check if text is just the author or title (ambiguous metadata)
+        if let Some(t) = title {
+            if lower_text == t.to_lowercase() {
+                needs_review = true;
+            }
+        }
+
+        if let Some(a) = author {
+            if lower_text == a.to_lowercase() {
+                needs_review = true;
+            }
+        }
+
+        // Also flag very short standalone lines that look like version tags or random uploader tags
+        if lower_text.starts_with("epub r") && lower_text.len() < 15 {
             continue;
         }
 
@@ -56,6 +88,7 @@ pub fn parse_chapter_html(html_content: &str) -> Vec<ContentBlock> {
             tag,
             text,
             src: None,
+            needs_review,
         });
     }
 
@@ -78,7 +111,7 @@ mod tests {
             </html>
         "#;
 
-        let result = parse_chapter_html(html);
+        let result = parse_chapter_html(html, None, None);
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].id, "h1");
         assert_eq!(result[0].tag, "h1");
@@ -91,5 +124,36 @@ mod tests {
         assert_eq!(result[2].id, "img1");
         assert_eq!(result[2].tag, "img");
         assert_eq!(result[2].src, Some("test.jpg".to_string()));
+    }
+
+    #[test]
+    fn test_filters_out_junk() {
+        let html = r#"
+            <html>
+                <body>
+                    <p>OceanofPDF.com</p>
+                    <h1 id="h1">My Awesome Book</h1>
+                    <p id="p1">First paragraph of real content.</p>
+                    <p>ePub r1.0</p>
+                    <p>John Doe</p>
+                    <p>oceanofpdf.com</p>
+                </body>
+            </html>
+        "#;
+
+        let result = parse_chapter_html(html, Some("My Awesome Book"), Some("John Doe"));
+
+        // Should only have 3 items (Title, Paragraph, Author)
+        // OceanofPDF and ePub r1.0 should be dropped
+        assert_eq!(result.len(), 3);
+
+        assert_eq!(result[0].text, "My Awesome Book");
+        assert_eq!(result[0].needs_review, true);
+
+        assert_eq!(result[1].text, "First paragraph of real content.");
+        assert_eq!(result[1].needs_review, false);
+
+        assert_eq!(result[2].text, "John Doe");
+        assert_eq!(result[2].needs_review, true);
     }
 }

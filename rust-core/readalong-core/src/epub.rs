@@ -202,6 +202,7 @@ pub fn sync_points_from_overlay<R: Read + std::io::Seek>(
         .map(|clip| SyncPoint {
             paragraph_id: clip.paragraph_id,
             timestamp_ms: clip.clip_begin_ms,
+            confidence: None,
         })
         .collect())
 }

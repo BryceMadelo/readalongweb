@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Save, Download } from 'lucide-react';
+import { PlaybackSync } from 'readalong-wasm';
 import { getBookData, saveBook, type BookMeta, type ContentBlock, type SyncPoint } from '../../storage/db';
 
 export default function Align() {
@@ -11,10 +12,19 @@ export default function Align() {
   const [syncPoints, setSyncPoints] = useState<SyncPoint[]>([]);
   const [images, setImages] = useState<Record<string, Uint8Array>>({});
   const [isLoading, setIsLoading] = useState(true);
+  const [showOnlyLowConfidence, setShowOnlyLowConfidence] = useState(false);
 
   // Filter out images for stamping (we only stamp text blocks)
   const textBlocks = useMemo(() => blocks.filter(b => b.tag !== 'img'), [blocks]);
   
+  const filteredTextBlocks = useMemo(() => {
+      if (!showOnlyLowConfidence) return textBlocks;
+      return textBlocks.filter(b => {
+          const sp = syncPoints.find(p => p.paragraph_id === b.id);
+          return !sp || sp.confidence === null || sp.confidence === undefined || sp.confidence < 0.6;
+      });
+  }, [textBlocks, showOnlyLowConfidence, syncPoints]);
+
   const [activeTextIndex, setActiveTextIndex] = useState<number>(0);
   const [audioUrl, setAudioUrl] = useState<string>('');
 
@@ -51,14 +61,14 @@ export default function Align() {
   }, [id]);
 
   const stampCurrentTime = () => {
-    if (!audioRef.current || activeTextIndex >= textBlocks.length) return;
+    if (!audioRef.current || activeTextIndex >= filteredTextBlocks.length) return;
     
-    const time_ms = Math.floor(audioRef.current.currentTime * 1000);
-    const block = textBlocks[activeTextIndex];
+    const timestamp_ms = Math.floor(audioRef.current.currentTime * 1000);
+    const block = filteredTextBlocks[activeTextIndex];
     
-    const newPoint = { id: block.id, time_ms };
-    const existingIdx = syncPoints.findIndex(p => p.id === block.id);
-    let newSyncPoints;
+    const newPoint = { paragraph_id: block.id, timestamp_ms, confidence: 1.0 };
+    const existingIdx = syncPoints.findIndex(p => p.paragraph_id === block.id);
+    let newSyncPoints: SyncPoint[];
     
     if (existingIdx >= 0) {
         newSyncPoints = [...syncPoints];
@@ -67,17 +77,33 @@ export default function Align() {
         newSyncPoints = [...syncPoints, newPoint];
     }
 
-    newSyncPoints.sort((a, b) => a.time_ms - b.time_ms);
+    newSyncPoints.sort((a, b) => a.timestamp_ms - b.timestamp_ms);
     setSyncPoints(newSyncPoints);
     
-    // Find next unstamped block
-    let nextIdx = activeTextIndex + 1;
-    while (nextIdx < textBlocks.length && newSyncPoints.find(p => p.id === textBlocks[nextIdx].id)) {
+    // Advance logic for full view:
+    // If showOnlyLowConfidence is false, we want to advance to the next unstamped block, OR if all remaining are stamped, just advance by 1.
+    // If showOnlyLowConfidence is true, the current block will disappear on the next render. So the next block will naturally slide into the current index.
+
+    let nextIdx = activeTextIndex;
+
+    if (!showOnlyLowConfidence) {
+        // Normal mode: skip already stamped blocks, but if we're just overriding everything sequentially, we should at least advance by 1
         nextIdx++;
+        // If you strictly want to skip ALL stamped blocks (like a first-pass stamping):
+        // while (nextIdx < filteredTextBlocks.length && newSyncPoints.find(p => p.paragraph_id === filteredTextBlocks[nextIdx].id)) {
+        //     nextIdx++;
+        // }
+    } else {
+        // In Low Confidence mode, `nextIdx` stays the same because the item will be removed from `filteredTextBlocks`.
+        // However, if it's the very last item in the list, we don't want to advance out of bounds on the next render.
+        // We'll let `useEffect` or render logic handle bounds.
     }
-    
-    if (nextIdx < textBlocks.length) {
+
+    if (nextIdx < filteredTextBlocks.length) {
         setActiveTextIndex(nextIdx);
+    } else if (nextIdx >= filteredTextBlocks.length && filteredTextBlocks.length > 0) {
+        // Clamp to end
+        setActiveTextIndex(filteredTextBlocks.length - 1);
     }
 
     // Auto-scroll
@@ -108,10 +134,24 @@ export default function Align() {
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTextIndex, textBlocks]); // Re-bind on index change
+  }, [activeTextIndex, filteredTextBlocks]); // Re-bind on index change
 
   const handleSave = async () => {
     if (meta && audioBlob) {
+      // Validate with WASM SyncEngine before saving
+      try {
+          const engine = new PlaybackSync();
+          // Provide points in chronological order to `add_sync_point`
+          const sorted = [...syncPoints].sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+          for (const p of sorted) {
+              engine.add_sync_point(p.paragraph_id, p.timestamp_ms, p.confidence ?? undefined);
+          }
+          engine.build_engine(); // This will test instantiation and any core panics
+      } catch (e) {
+          alert("Validation failed: Sync map timestamps must be monotonically increasing. " + e);
+          return;
+      }
+
       await saveBook(meta, blocks, audioBlob, syncPoints, images);
       alert("Sync map saved successfully!");
     }
@@ -139,13 +179,27 @@ export default function Align() {
   
   const handleUndo = () => {
       if (syncPoints.length === 0) return;
-      // Undo simply removes the point with the highest time_ms
-      const sorted = [...syncPoints].sort((a, b) => a.time_ms - b.time_ms);
+
+      // When undoing, if we are in low-confidence mode, the previously "fixed" point will reappear
+      // in our `filteredTextBlocks` list on the *next* render because it's no longer in `syncPoints`.
+      // The easiest way to handle this is to pop it from syncPoints, and let the `activeTextIndex`
+      // naturally point to it if it reappears in the list.
+      const sorted = [...syncPoints].sort((a, b) => a.timestamp_ms - b.timestamp_ms);
       const popped = sorted.pop();
       setSyncPoints(sorted);
+
       if (popped) {
-          const idx = textBlocks.findIndex(b => b.id === popped.id);
-          if (idx >= 0) setActiveTextIndex(idx);
+          // If we are showing all blocks, we find its index in the full list
+          if (!showOnlyLowConfidence) {
+              const idx = textBlocks.findIndex(b => b.id === popped.paragraph_id);
+              if (idx >= 0) setActiveTextIndex(idx);
+          } else {
+              // In low confidence mode, it will re-enter the array.
+              // Without predicting where it re-enters, resetting to 0 is safest,
+              // or searching for it on the next render via an effect.
+              // For a simple fix, resetting to top of the low-confidence list is safe.
+              setActiveTextIndex(0);
+          }
       }
   };
 
@@ -161,7 +215,18 @@ export default function Align() {
             </Link>
             <h2 style={{ fontSize: '1.25rem', margin: 0 }}>Alignment Studio: {meta?.title}</h2>
           </div>
-          <div style={{ display: 'flex', gap: '1rem' }}>
+          <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.875rem' }}>
+                <input
+                    type="checkbox"
+                    checked={showOnlyLowConfidence}
+                    onChange={(e) => {
+                        setShowOnlyLowConfidence(e.target.checked);
+                        setActiveTextIndex(0); // Reset index on filter change
+                    }}
+                />
+                Show Low Confidence Only
+            </label>
             <button onClick={handleExport} className="btn btn-secondary">
                <Download size={16} /> Export JSON
             </button>
@@ -190,8 +255,8 @@ export default function Align() {
         className="card" 
         style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', backgroundColor: 'var(--bg-secondary)' }}
       >
-        {textBlocks.map((block, i) => {
-          const syncPoint = syncPoints.find(p => p.id === block.id);
+        {filteredTextBlocks.map((block, i) => {
+          const syncPoint = syncPoints.find(p => p.paragraph_id === block.id);
           const isStamped = !!syncPoint;
           const isActive = i === activeTextIndex;
 
@@ -200,7 +265,7 @@ export default function Align() {
               key={block.id}
               onClick={() => {
                   if (syncPoint) {
-                      handleSeekToPoint(syncPoint.time_ms);
+                      handleSeekToPoint(syncPoint.timestamp_ms);
                   } else {
                       setActiveTextIndex(i);
                   }
@@ -219,7 +284,7 @@ export default function Align() {
               }}
             >
                <div style={{ minWidth: '80px', color: 'var(--text-secondary)', fontSize: '0.875rem', fontFamily: 'monospace' }}>
-                  {syncPoint ? (syncPoint.time_ms / 1000).toFixed(3) + 's' : '--:--'}
+                  {syncPoint ? (syncPoint.timestamp_ms / 1000).toFixed(3) + 's' : '--:--'}
                </div>
                <div style={{ flex: 1, color: isStamped ? 'var(--text-secondary)' : 'var(--text-primary)' }}>
                   {block.text}
