@@ -9,6 +9,34 @@ export interface ASRTranscriptChunk {
     timestamp: [number, number]; // [start, end]
 }
 
+export function stitchChunks(
+    outChunks: any[],
+    timeOffset: number,
+    isLastChunk: boolean,
+    isFirstChunk: boolean
+): ASRTranscriptChunk[] {
+    const KEEP_START = 15;
+    const KEEP_END = 285;
+
+    return outChunks.map((c: any) => {
+        const localStart = c.timestamp[0] ?? 0;
+        const localEnd = c.timestamp[1] ?? localStart;
+        return {
+            text: c.text,
+            timestamp: [localStart + timeOffset, localEnd + timeOffset],
+            localStart: localStart,
+            localEnd: localEnd
+        };
+    }).filter((c: any) => {
+        const afterStart = isFirstChunk ? true : c.localStart >= KEEP_START;
+        const beforeEnd = isLastChunk ? true : c.localStart < KEEP_END;
+        return afterStart && beforeEnd;
+    }).map((c: any) => ({
+        text: c.text,
+        timestamp: c.timestamp as [number, number]
+    }));
+}
+
 export interface ContentBlock {
     id: string;
     tag: string;

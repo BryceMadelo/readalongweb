@@ -1,4 +1,50 @@
-import { fuzzyAlign, type ASRTranscriptChunk, type ContentBlock } from './fuzzyAlignment';
+import { fuzzyAlign, stitchChunks, type ContentBlock, type ASRTranscriptChunk } from './fuzzyAlignment';
+
+describe('stitchChunks', () => {
+    it('accumulates timestamps and trims overlap correctly', () => {
+        // Chunk 1: isFirstChunk = true, isLastChunk = false
+        const outChunks1 = [
+            { text: 'hello', timestamp: [0, 1] }, // Keep: isFirstChunk overrides localStart >= 15
+            { text: 'world', timestamp: [280, 284] }, // Keep: localStart < 285
+            { text: 'overlap1', timestamp: [284, 286] }, // Keep: localStart < 285
+            { text: 'overlap2', timestamp: [300, 302] }, // Drop: localStart >= 285
+        ];
+
+        const stitched1 = stitchChunks(outChunks1, 0, false, true);
+        expect(stitched1.length).toBe(3);
+        expect(stitched1[0].timestamp).toEqual([0, 1]);
+        expect(stitched1[1].timestamp).toEqual([280, 284]);
+        expect(stitched1[2].timestamp).toEqual([284, 286]);
+
+        // Chunk 2: isFirstChunk = false, isLastChunk = false
+        const outChunks2 = [
+            { text: 'overlap1_repeat', timestamp: [14, 16] }, // Drop: localStart < 15
+            { text: 'overlap2_repeat', timestamp: [15, 17] }, // Keep: localStart >= 15
+            { text: 'mid', timestamp: [20, 22] }, // Keep: localStart >= 15 && localStart < 285
+            { text: 'end_overlap', timestamp: [284, 286] } // Keep: localStart < 285
+        ];
+
+        // offset for chunk 2 is 270
+        const stitched2 = stitchChunks(outChunks2, 270, false, false);
+        expect(stitched2.length).toBe(3);
+        expect(stitched2[0].timestamp).toEqual([15 + 270, 17 + 270]);
+        expect(stitched2[1].timestamp).toEqual([20 + 270, 22 + 270]);
+        expect(stitched2[2].timestamp).toEqual([284 + 270, 286 + 270]);
+
+        // Chunk 3: isFirstChunk = false, isLastChunk = true
+        const outChunks3 = [
+            { text: 'end_overlap_repeat', timestamp: [13, 16] }, // Drop: localStart < 15
+            { text: 'final1', timestamp: [15, 17] }, // Keep
+            { text: 'final2', timestamp: [301, 302] }, // Keep: isLastChunk overrides localStart < 285
+        ];
+
+        // offset for chunk 3 is 540
+        const stitched3 = stitchChunks(outChunks3, 540, true, false);
+        expect(stitched3.length).toBe(2);
+        expect(stitched3[0].timestamp).toEqual([15 + 540, 17 + 540]);
+        expect(stitched3[1].timestamp).toEqual([301 + 540, 302 + 540]);
+    });
+});
 
 describe('fuzzyAlign', () => {
     it('exact match', () => {
