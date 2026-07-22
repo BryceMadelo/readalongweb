@@ -73,11 +73,17 @@ export function fuzzyAlign(
 
         let bestStartIdx = -1;
         let maxMatchCount = 0;
-        const windowEnd = Math.min(asrIdx + 500, words.length); // Search window
 
-        // A simple sliding window approach (can be optimized with dynamic programming if needed)
-        // For each possible starting point in the ASR word stream within the search window:
-        for (let i = asrIdx; i < windowEnd; i++) {
+        // Use a dynamic search window. Start small, expand if no good match is found.
+        // This allows recovering from large gaps (e.g. missing chapter audio) without killing performance normally.
+        const searchWindowSize = 500;
+        let windowStart = asrIdx;
+        let windowEnd = Math.min(windowStart + searchWindowSize, words.length);
+
+        while (bestStartIdx === -1 && windowStart < words.length) {
+
+        // A simple sliding window approach
+        for (let i = windowStart; i < windowEnd; i++) {
             // Count how many consecutive words match approximately
             let matchCount = 0;
             let pIdx = 0;
@@ -123,6 +129,25 @@ export function fuzzyAlign(
                 break;
             }
         }
+
+        // If we didn't find a decent match, expand the search window and try again
+        if (maxMatchCount < Math.min(3, pWords.length)) {
+            // We failed to find a good match in the current window.
+            // Move the window forward and try again, up to the end of the text.
+            windowStart = windowEnd;
+            windowEnd = Math.min(windowStart + searchWindowSize, words.length);
+            bestStartIdx = -1; // Reset to force continuation
+
+            // If we've searched way too far ahead (e.g., 5000 words gap), we should probably
+            // give up on this paragraph to avoid scanning the entire book for a missing paragraph,
+            // which causes O(N*M) lag.
+            if (windowStart - asrIdx > 5000) {
+                 break;
+            }
+        } else {
+            break; // Found a decent match, stop expanding
+        }
+        } // end while
 
         let confidence: number | null;
         let timestamp_ms: number;

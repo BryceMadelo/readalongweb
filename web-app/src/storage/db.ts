@@ -95,6 +95,13 @@ export async function saveBook(
   await tx.done;
 }
 
+export async function updateSyncMap(bookId: string, syncMap: SyncPoint[]) {
+  const db = await initDB();
+  const tx = db.transaction('sync_maps', 'readwrite');
+  await tx.objectStore('sync_maps').put({ bookId, points: syncMap });
+  await tx.done;
+}
+
 export async function getBooks(): Promise<BookMeta[]> {
   const db = await initDB();
   return db.getAllFromIndex('books', 'by-date');

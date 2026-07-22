@@ -2,14 +2,15 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { load_epub_paragraphs, load_epub_images } from 'readalong-wasm';
 import { Upload, Book, Music, ArrowLeft } from 'lucide-react';
-import { saveBook, getBookData, type ContentBlock } from '../../storage/db';
+import { saveBook, updateSyncMap, type ContentBlock } from '../../storage/db';
+import { useAlignment } from '../../context/AlignmentContext';
 
 export default function Import() {
   const navigate = useNavigate();
+  const { startJob, updateJob, completeJob, failJob } = useAlignment();
   const [epubFile, setEpubFile] = useState<File | null>(null);
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [progressMsg, setProgressMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const handleImport = async () => {
@@ -38,14 +39,14 @@ export default function Import() {
       const bookId = crypto.randomUUID();
       const title = epubFile.name.replace('.epub', '').replace(/[-_]/g, ' ');
 
-      // 2. We now do alignment in the background worker instead of needing a pre-made Sync Map
-      setProgressMsg("Preparing sync map...");
+      // Use the global alignment context for background processing indication
+      startJob({ bookId, bookTitle: title, progressMsg: "Preparing sync map...", status: 'processing' });
 
-      const audioBuffer = await audioFile.arrayBuffer();
-      const audioContext = new AudioContext({ sampleRate: 16000 }); // Whisper expects 16kHz
-      const decodedAudio = await audioContext.decodeAudioData(audioBuffer);
-      const audioData = decodedAudio.getChannelData(0); // Float32Array
-      
+      // We don't use AudioContext here because decoding a 10-hour audio blob
+      // directly to Float32Array causes severe RAM spikes and OOM.
+      // Instead, we pass the file directly to the worker.
+      // The `@xenova/transformers` library contains internal capability to read audio iteratively
+      // if passed a raw blob / URL.
       // --- NEW IMAGE EXTRACTION LOGIC ---
       // 4. Extract images using our new Rust function
       const rawImages = load_epub_images(bytes); 
@@ -78,60 +79,39 @@ export default function Import() {
       navigate('/'); // Go to library immediately
 
       // Fire off the background worker for alignment
+      // Pass the audio File object directly so the worker can chunk it using File.slice
       const worker = new Worker(new URL('../../alignment.worker.ts', import.meta.url), { type: 'module' });
 
       worker.onmessage = async (e) => {
-        const { type, chunks, error: workerError } = e.data;
+        const { type, syncMap, status, error: workerError } = e.data;
 
-        if (type === 'COMPLETE') {
-          // Dynamic import to avoid loading all logic if not needed
-          const { fuzzyAlign } = await import('../../fuzzyAlignment');
-          const syncMap = fuzzyAlign(validBlocks, chunks);
+        if (type === 'PROGRESS') {
+           updateJob(status);
+        } else if (type === 'PARTIAL_SYNC' || type === 'COMPLETE') {
+          // Use the dedicated update function to avoid I/O thrashing on massive blobs
+          await updateSyncMap(bookId, syncMap);
 
-          // Get the current state of the book to preserve progress/dateAdded
-          let currentMeta = null;
-          try {
-             const data = await getBookData(bookId);
-             if (data && data.meta) currentMeta = data.meta;
-          } catch(err) {
-             console.error("Could not fetch current book data", err);
+          if (type === 'COMPLETE') {
+              completeJob();
+              worker.terminate();
           }
-
-          // Update the book with the new sync map
-          await saveBook(
-            currentMeta || {
-              id: bookId,
-              title: title,
-              author: "Unknown Author",
-              dateAdded: Date.now(),
-              progress: 0
-            },
-            validBlocks,
-            audioFile,
-            syncMap,
-            processedImages
-          );
-
-          worker.terminate();
-          // NOTE: In a real app we'd dispatch a global event or context update here
-          // to let the UI know this book's sync map is ready.
-          console.log(`Sync map for ${title} generated successfully.`);
         } else if (type === 'ERROR') {
-          console.error(`Alignment failed for ${title}: ${workerError}`);
+          failJob(`Alignment failed: ${workerError}`);
           worker.terminate();
         }
       };
 
       worker.postMessage({
         type: 'START_ALIGNMENT',
-        audioData,
-      }, [audioData.buffer]); // Transfer buffer for speed
+        audioFile, // Sending the File directly allows worker to slice it
+        validBlocks
+      });
 
     } catch (err: unknown) {
       console.error(err);
       setError(err instanceof Error ? err.message : "An unexpected error occurred during import.");
       setIsProcessing(false);
-      setProgressMsg(null);
+      failJob("Import failed.");
     }
   };
 
@@ -191,10 +171,7 @@ export default function Import() {
 
       </div>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ color: 'var(--text-secondary)' }}>
-            {progressMsg && (<span>{progressMsg}</span>)}
-        </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
         <button 
           className="btn btn-primary" 
           onClick={handleImport}
