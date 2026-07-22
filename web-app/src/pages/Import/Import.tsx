@@ -79,7 +79,6 @@ export default function Import() {
       navigate('/'); // Go to library immediately
 
       // Fire off the background worker for alignment
-      // Pass the audio File object directly so the worker can chunk it using File.slice
       const worker = new Worker(new URL('../../alignment.worker.ts', import.meta.url), { type: 'module' });
 
       worker.onmessage = async (e) => {
@@ -101,9 +100,11 @@ export default function Import() {
         }
       };
 
+      const audioUrl = URL.createObjectURL(audioFile);
+
       worker.postMessage({
         type: 'START_ALIGNMENT',
-        audioFile, // Sending the File directly allows worker to slice it
+        audioUrl,
         validBlocks
       });
 
