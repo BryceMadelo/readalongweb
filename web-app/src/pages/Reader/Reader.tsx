@@ -52,9 +52,9 @@ export default function Reader() {
           if (data.syncMap && data.syncMap.length > 0) {
             const engine = new PlaybackSync();
             data.syncMap.forEach((point, idx) => {
-              engine.add_sync_point(point.id, point.time_ms);
+              engine.add_sync_point(point.paragraph_id, point.timestamp_ms, point.confidence ?? undefined);
               // For a real EPUB, paragraph_ids should match the HTML IDs. 
-              const mappedId = point.id;
+              const mappedId = point.paragraph_id;
               idToIndexMap.current.set(mappedId, idx);
               paragraphIdMap.current.set(idx, mappedId);
             });
@@ -101,7 +101,7 @@ export default function Reader() {
 
 
   // We need the raw sync points for Text -> Audio seek. Let's fetch them.
-  const [syncPoints, setSyncPoints] = useState<{id: string, time_ms: number}[]>([]);
+  const [syncPoints, setSyncPoints] = useState<{paragraph_id: string, timestamp_ms: number}[]>([]);
   
   useEffect(() => {
     if (id) {
@@ -113,7 +113,7 @@ export default function Reader() {
     // We assume sequential mapping for this spike, e.g. index -> point.
     // A robust parser would align paragraph HTML IDs with sync points.
     if (syncPoints[index]) {
-      setSeekToMs(syncPoints[index].time_ms);
+      setSeekToMs(syncPoints[index].timestamp_ms);
       setActiveParagraphIndex(index);
     }
   };
@@ -136,9 +136,12 @@ export default function Reader() {
           <h2 style={{ margin: 0, fontSize: '1.25rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>
             {meta.title}
           </h2>
-          <Link to={`/align/${meta.id}`} className="btn btn-outline" style={{ padding: '0.5rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', textDecoration: 'none' }}>
+          <Link to={`/align/${meta.id}`} className="btn" style={{ padding: '0.5rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', textDecoration: 'none', backgroundColor: 'transparent', color: 'var(--text-secondary)', border: '1px solid transparent' }}
+            onMouseOver={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'}
+            onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+          >
             <Settings2 size={16} />
-            <span style={{ fontSize: '0.875rem' }}>Align</span>
+            <span style={{ fontSize: '0.875rem' }}>Fix sync issues</span>
           </Link>
         </div>
       </header>

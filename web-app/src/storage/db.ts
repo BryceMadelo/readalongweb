@@ -10,8 +10,9 @@ export interface BookMeta {
 }
 
 export interface SyncPoint {
-  id: string;
-  time_ms: number;
+  paragraph_id: string;
+  timestamp_ms: number;
+  confidence: number | null;
 }
 
 export interface ContentBlock {
@@ -19,6 +20,7 @@ export interface ContentBlock {
   tag: string;
   text: string;
   src?: string;
+  needs_review: boolean;
 }
 
 interface ReadAlongDB extends DBSchema {

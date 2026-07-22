@@ -16,15 +16,18 @@ pub struct SyncPoint {
     pub paragraph_id: String,
     #[wasm_bindgen(skip)]
     pub timestamp_ms: u64,
+    #[wasm_bindgen(skip)]
+    pub confidence: Option<f32>,
 }
 
 #[wasm_bindgen]
 impl SyncPoint {
     #[wasm_bindgen(constructor)]
-    pub fn new(paragraph_id: String, timestamp_ms: u64) -> SyncPoint {
+    pub fn new(paragraph_id: String, timestamp_ms: u64, confidence: Option<f32>) -> SyncPoint {
         SyncPoint {
             paragraph_id,
             timestamp_ms,
+            confidence,
         }
     }
 
@@ -37,6 +40,11 @@ impl SyncPoint {
     pub fn timestamp_ms(&self) -> f64 {
         self.timestamp_ms as f64
     }
+
+    #[wasm_bindgen(getter)]
+    pub fn confidence(&self) -> Option<f32> {
+        self.confidence
+    }
 }
 
 impl SyncPoint {
@@ -44,6 +52,7 @@ impl SyncPoint {
         CoreSyncPoint {
             paragraph_id: self.paragraph_id.clone(),
             timestamp_ms: self.timestamp_ms,
+            confidence: self.confidence,
         }
         // If `CoreSyncPoint`'s fields aren't public, use whatever
         // constructor readalong_core exposes instead, e.g.:
@@ -69,10 +78,11 @@ impl PlaybackSync {
         }
     }
 
-    pub fn add_sync_point(&mut self, paragraph_id: String, timestamp_ms: f64) {
+    pub fn add_sync_point(&mut self, paragraph_id: String, timestamp_ms: f64, confidence: Option<f32>) {
         self.points.push(SyncPoint {
             paragraph_id,
             timestamp_ms: timestamp_ms as u64,
+            confidence,
         });
     }
 
@@ -148,6 +158,21 @@ pub fn load_epub_paragraphs(bytes: &[u8]) -> JsValue {
         }
     };
 
+    // Extract title and author from OPF metadata for junk filtering
+    let mut title = None;
+    let mut author = None;
+    if let Ok(doc) = roxmltree::Document::parse(&opf_xml) {
+        if let Some(metadata) = doc.descendants().find(|n| n.tag_name().name() == "metadata") {
+            for child in metadata.children() {
+                if child.tag_name().name() == "title" {
+                    title = child.text().map(|s| s.to_string());
+                } else if child.tag_name().name() == "creator" {
+                    author = child.text().map(|s| s.to_string());
+                }
+            }
+        }
+    }
+
     let opf_dir = opf_path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
     let mut all_blocks = Vec::new();
     let mut images = HashMap::new();
@@ -157,7 +182,7 @@ pub fn load_epub_paragraphs(bytes: &[u8]) -> JsValue {
         let chapter_dir = full_path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
 
         if let Ok(content) = read_zip_entry_as_string(&mut archive, &full_path) {
-            let mut blocks = parse_chapter_html(&content);
+            let mut blocks = parse_chapter_html(&content, title.as_deref(), author.as_deref());
             for block in &mut blocks {
                 // Make the block ID globally unique by prefixing with the chapter ID
                 block.id = format!("{}_{}", item.id, block.id);
@@ -247,6 +272,7 @@ pub fn load_epub_smil_sync(bytes: &[u8]) -> JsValue {
                                 points.push(SyncPoint {
                                     paragraph_id: id.to_string(),
                                     timestamp_ms: time_ms,
+                                    confidence: None,
                                 });
                             }
                         }

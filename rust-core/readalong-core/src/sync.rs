@@ -4,6 +4,7 @@ use std::collections::HashMap;
 pub struct SyncPoint {
     pub paragraph_id: String,
     pub timestamp_ms: u64,
+    pub confidence: Option<f32>,
 }
 
 pub struct SyncEngine {
@@ -63,14 +64,17 @@ mod tests {
             SyncPoint {
                 paragraph_id: "p2".to_string(),
                 timestamp_ms: 4500,
+                confidence: None,
             },
             SyncPoint {
                 paragraph_id: "p3".to_string(),
                 timestamp_ms: 8000,
+                confidence: None,
             },
             SyncPoint {
                 paragraph_id: "p1".to_string(),
                 timestamp_ms: 1000,
+                confidence: None,
             },
         ])
     }
