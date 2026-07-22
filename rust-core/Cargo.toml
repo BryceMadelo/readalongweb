@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "readalong-core",
+    "readalong-wasm",
+    "readalong-mobile"
+]
+resolver = "2"

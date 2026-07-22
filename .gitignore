@@ -1,0 +1,37 @@
+# Node / Web App
+node_modules/
+dist/
+build/
+.npm
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Rust Core
+target/
+**/*.rs.bk
+
+# React Native / Expo (Mobile)
+.expo/
+.expo-shared/
+web-build/
+cache/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+app.json.backup
+
+# IDEs and OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp

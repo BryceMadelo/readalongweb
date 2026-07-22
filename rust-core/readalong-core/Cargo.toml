@@ -1,0 +1,10 @@
+[package]
+name = "readalong-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+roxmltree = "0.21.0"
+scraper = "0.27.0"
+serde = { version = "1.0.229", features = ["derive"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
