@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  readalong-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: readalong-server
+    ports:
+      - "3000:3000"
+    volumes:
+      - readalong_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  readalong_data:
