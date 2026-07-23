@@ -238,6 +238,20 @@ pub async fn handle_import(
             }
         };
 
+        let mut title = None;
+        let mut author = None;
+        if let Ok(doc) = roxmltree::Document::parse(&opf_xml) {
+            if let Some(metadata) = doc.descendants().find(|n| n.tag_name().name() == "metadata") {
+                for child in metadata.children() {
+                    if child.tag_name().name() == "title" {
+                        title = child.text().map(|s| s.to_string());
+                    } else if child.tag_name().name() == "creator" {
+                        author = child.text().map(|s| s.to_string());
+                    }
+                }
+            }
+        }
+
         let opf_dir = if let Some(idx) = opf_path.rfind('/') {
             &opf_path[..idx]
         } else {
@@ -256,8 +270,11 @@ pub async fn handle_import(
                 }
             };
 
-            // For now, passing None for title and author since we just need blocks
-            let mut blocks = readalong_core::content::parse_chapter_html(&html, None, None);
+            let mut blocks = readalong_core::content::parse_chapter_html(&html, title.as_deref(), author.as_deref());
+            for block in &mut blocks {
+                // Make the block ID globally unique by prefixing with the chapter ID
+                block.id = format!("{}_{}", item.id, block.id);
+            }
             all_paragraphs.append(&mut blocks);
         }
 
