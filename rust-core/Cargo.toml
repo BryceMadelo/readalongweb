@@ -3,5 +3,5 @@ members = [
     "readalong-core",
     "readalong-wasm",
     "readalong-mobile"
-]
+, "readalong-server"]
 resolver = "2"
