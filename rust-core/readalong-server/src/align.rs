@@ -40,6 +40,9 @@ pub fn fuzzy_align(paragraphs: &[ContentBlock], asr_chunks: &[ASRTranscriptChunk
         let mut best_start_idx: i32 = -1;
         let mut max_match_count = 0;
 
+        tracing::info!("Aligning paragraph: {:?}", p_words);
+        tracing::info!("First 20 words in ASR from {}: {:?}", asr_idx, words.iter().skip(asr_idx).take(20).map(|w| &w.word).collect::<Vec<_>>());
+
         let search_window_size = 500;
         let mut window_start = asr_idx;
         let mut window_end = min(window_start + search_window_size, words.len());
@@ -95,6 +98,7 @@ pub fn fuzzy_align(paragraphs: &[ContentBlock], asr_chunks: &[ASRTranscriptChunk
                 window_start = window_end;
                 window_end = min(window_start + search_window_size, words.len());
                 best_start_idx = -1;
+                max_match_count = 0;
 
                 if window_start - asr_idx > 5000 {
                     break;

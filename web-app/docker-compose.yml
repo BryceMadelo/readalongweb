@@ -3,8 +3,8 @@ version: "3.8"
 services:
   readalong-server:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../rust-core
+      dockerfile: ../web-app/Dockerfile
     container_name: readalong-server
     ports:
       - "3000:3000"

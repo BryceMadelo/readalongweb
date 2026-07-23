@@ -1,4 +1,4 @@
-FROM rust:1.80-slim as builder
+FROM rust:1.88-slim as builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -13,12 +13,11 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy the entire workspace
-COPY Cargo.toml Cargo.lock ./
-COPY rust-core ./rust-core
+# Copy the entire workspace (context root IS rust-core/ now)
+COPY . .
 
 # Build the server crate
-RUN cargo build --release --bin readalong-server --manifest-path rust-core/Cargo.toml
+RUN cargo build --release --bin readalong-server --manifest-path Cargo.toml
 
 # Download the whisper model during build to embed it in the image
 RUN mkdir -p /models && \
@@ -35,7 +34,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy the compiled binary and model
-COPY --from=builder /app/rust-core/target/release/readalong-server /app/readalong-server
+COPY --from=builder /app/target/release/readalong-server /app/readalong-server
 COPY --from=builder /models /models
 
 # Create a volume for the database and uploads

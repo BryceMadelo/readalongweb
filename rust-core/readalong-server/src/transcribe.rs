@@ -109,6 +109,19 @@ pub fn transcribe_audio(wav_path: &Path, model_path: &Path) -> Result<Vec<ASRTra
                     let token_t0 = token_data.t0 as f32 / 100.0;
                     let token_t1 = token_data.t1 as f32 / 100.0;
 
+                    if token_text.starts_with(' ') && !current_word.is_empty() {
+                        let word_text = current_word.trim().to_string();
+                        if !word_text.is_empty() {
+                            words.push(ASRTranscriptWord {
+                                word: word_text,
+                                start: current_word_start,
+                                end: token_t0, // approximate end as start of next token
+                            });
+                        }
+                        current_word.clear();
+                        current_word_start = -1.0;
+                    }
+
                     if current_word_start < 0.0 {
                         current_word_start = token_t0;
                     }

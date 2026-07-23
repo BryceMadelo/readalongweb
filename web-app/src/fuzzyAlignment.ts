@@ -137,6 +137,7 @@ export function fuzzyAlign(
             windowStart = windowEnd;
             windowEnd = Math.min(windowStart + searchWindowSize, words.length);
             bestStartIdx = -1; // Reset to force continuation
+            maxMatchCount = 0; // Fix: reset match count
 
             // If we've searched way too far ahead (e.g., 5000 words gap), we should probably
             // give up on this paragraph to avoid scanning the entire book for a missing paragraph,

@@ -1,0 +1,8 @@
+target/
+.git/
+**/node_modules/
+tmp_uploads/
+*.db
+*.mp3
+*.m4b
+*.epub

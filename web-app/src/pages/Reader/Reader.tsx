@@ -51,16 +51,19 @@ export default function Reader() {
           // Rebuild Sync Engine
           if (data.syncMap && data.syncMap.length > 0) {
             const engine = new PlaybackSync();
-            data.syncMap.forEach((point, idx) => {
+            data.syncMap.forEach((point) => {
               engine.add_sync_point(point.paragraph_id, point.timestamp_ms, point.confidence ?? undefined);
-              // For a real EPUB, paragraph_ids should match the HTML IDs. 
-              const mappedId = point.paragraph_id;
-              idToIndexMap.current.set(mappedId, idx);
-              paragraphIdMap.current.set(idx, mappedId);
             });
             engine.build_engine();
             syncEngineRef.current = engine;
           }
+
+          data.paragraphs.forEach((block, idx) => {
+            if (block.id) {
+              idToIndexMap.current.set(block.id, idx);
+              paragraphIdMap.current.set(idx, block.id);
+            }
+          });
         }
       } catch (e) {
         console.error("Failed to load book:", e);
@@ -110,11 +113,13 @@ export default function Reader() {
   }, [id]);
 
   const handleTextTap = (index: number) => {
-    // We assume sequential mapping for this spike, e.g. index -> point.
-    // A robust parser would align paragraph HTML IDs with sync points.
-    if (syncPoints[index]) {
-      setSeekToMs(syncPoints[index].timestamp_ms);
-      setActiveParagraphIndex(index);
+    const paragraphId = paragraphIdMap.current.get(index);
+    if (paragraphId) {
+      const point = syncPoints.find(p => p.paragraph_id === paragraphId);
+      if (point) {
+        setSeekToMs(point.timestamp_ms);
+        setActiveParagraphIndex(index);
+      }
     }
   };
 
