@@ -1,9 +1,29 @@
-import type { ContentBlock, SyncPoint } from './fuzzyAlignment';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import type { ContentBlock } from './fuzzyAlignment';
 
 export interface AlignmentProvider {
     align(
-        audioUrl: string,
-        validBlocks: ContentBlock[],
-        onProgress: (status: string) => void
-    ): Promise<SyncPoint[]>;
+        audioBlob: Blob,
+        epubText: ContentBlock[],
+        onProgress: (msg: string) => void
+    ): Promise<any>;
+}
+
+export class ClientAlignmentProvider implements AlignmentProvider {
+    public ffmpeg: FFmpeg;
+    public transcriber: any;
+
+    constructor(ffmpeg: FFmpeg, transcriber: any) {
+        this.ffmpeg = ffmpeg;
+        this.transcriber = transcriber;
+    }
+
+    async align(
+        audioBlob: Blob,
+        epubText: ContentBlock[],
+        onProgress: (msg: string) => void
+    ): Promise<any> {
+        console.log("audioBlob:", audioBlob, "epubText:", epubText, "onProgress:", onProgress);
+        return [];
+    }
 }
