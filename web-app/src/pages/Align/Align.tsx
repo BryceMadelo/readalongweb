@@ -12,7 +12,7 @@ export default function Align() {
   const [syncPoints, setSyncPoints] = useState<SyncPoint[]>([]);
   const [images, setImages] = useState<Record<string, Uint8Array>>({});
   const [isLoading, setIsLoading] = useState(true);
-  const [showOnlyLowConfidence, setShowOnlyLowConfidence] = useState(false);
+  const [showOnlyLowConfidence, setShowOnlyLowConfidence] = useState(true);
 
   // Filter out images for stamping (we only stamp text blocks)
   const textBlocks = useMemo(() => blocks.filter(b => b.tag !== 'img'), [blocks]);
@@ -139,10 +139,10 @@ export default function Align() {
   const handleSave = async () => {
     if (meta && audioBlob) {
       // Validate with WASM SyncEngine before saving
+      const sorted = [...syncPoints].sort((a, b) => a.timestamp_ms - b.timestamp_ms);
       try {
           const engine = new PlaybackSync();
           // Provide points in chronological order to `add_sync_point`
-          const sorted = [...syncPoints].sort((a, b) => a.timestamp_ms - b.timestamp_ms);
           for (const p of sorted) {
               engine.add_sync_point(p.paragraph_id, p.timestamp_ms, p.confidence ?? undefined);
           }
@@ -150,6 +150,23 @@ export default function Align() {
       } catch (e) {
           alert("Validation failed: Sync map timestamps must be monotonically increasing. " + e);
           return;
+      }
+
+      try {
+          // Push to backend server
+          const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+          const response = await fetch(`${API_URL}/sync_map/${meta.id}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(sorted)
+          });
+
+          if (!response.ok) {
+              throw new Error(`Server returned ${response.status}: ${await response.text()}`);
+          }
+      } catch (err) {
+          console.error("Failed to sync map to server:", err);
+          alert("Failed to sync with the backend server, but saving locally.");
       }
 
       await saveBook(meta, blocks, audioBlob, syncPoints, images);
@@ -213,7 +230,7 @@ export default function Align() {
             <Link to={`/reader/${meta?.id}`} className="btn btn-outline" style={{ padding: '0.5rem', textDecoration: 'none', color: 'var(--text-secondary)' }}>
               <ArrowLeft size={20} /> Back
             </Link>
-            <h2 style={{ fontSize: '1.25rem', margin: 0 }}>Alignment Studio: {meta?.title}</h2>
+            <h2 style={{ fontSize: '1.25rem', margin: 0 }}>Fix sync issues: {meta?.title}</h2>
           </div>
           <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.875rem' }}>
