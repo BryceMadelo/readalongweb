@@ -1107,6 +1107,7 @@ dependencies = [
  "axum",
  "hound",
  "readalong-core",
+ "roxmltree",
  "rusqlite",
  "serde",
  "serde_json",
