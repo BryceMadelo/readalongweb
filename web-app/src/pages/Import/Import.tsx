@@ -98,36 +98,8 @@ export default function Import() {
         processedImages
       );
 
-      // Fire off polling before navigating so it persists in the background (or rely on the global context)
-      // Actually, since the component unmounts on navigate('/'), `setInterval` will technically keep running in the background memory
-      // However, to make it robust against page reloads, a real app would initialize polling from a top-level component (like App.tsx) by checking the DB for pending books.
-      // For this prototype, we'll keep the interval here, but handle the "Error" state explicitly.
-      const pollInterval = setInterval(async () => {
-          try {
-              const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-              const statusRes = await fetch(`${API_URL}/status/${serverBookId}`);
-              if (statusRes.ok) {
-                  const data = await statusRes.json();
-                  if (data.status === 'Processed Book') {
-                      clearInterval(pollInterval);
-                      if (data.sync_map) {
-                          await updateSyncMap(serverBookId, data.sync_map);
-                          completeJob();
-                      } else {
-                          failJob("Alignment finished but no sync map was returned.");
-                      }
-                  } else if (data.status.startsWith('Error')) {
-                      clearInterval(pollInterval);
-                      failJob(data.status);
-                  } else {
-                      updateJob(data.status);
-                  }
-              }
-          } catch (e) {
-              console.error("Polling error:", e);
-              // We'll keep polling in case server just blipped
-          }
-      }, 3000);
+      // Tell the AlignmentContext about the server ID so it can track it
+      startJob({ bookId: serverBookId, bookTitle: title, progressMsg: "Aligning text and audio...", status: 'processing' });
 
       navigate('/'); // Go to library immediately
 
