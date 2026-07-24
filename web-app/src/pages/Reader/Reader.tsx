@@ -87,14 +87,18 @@ export default function Reader() {
       const activeId = syncEngineRef.current.get_active_paragraph(currentTimeMs);
       if (activeId) {
         const index = idToIndexMap.current.get(activeId);
-        if (index !== undefined && index !== activeParagraphIndex) {
-          setActiveParagraphIndex(index);
-          
-          // Auto-scroll logic: keep the active paragraph roughly in the center
-          virtuosoRef.current?.scrollToIndex({
-            index,
-            align: 'center',
-            behavior: 'smooth'
+        if (index !== undefined) {
+          setActiveParagraphIndex(prev => {
+            if (prev !== index) {
+              // Auto-scroll logic: keep the active paragraph roughly in the center
+              virtuosoRef.current?.scrollToIndex({
+                index,
+                align: 'center',
+                behavior: 'smooth'
+              });
+              return index;
+            }
+            return prev;
           });
         }
       }
