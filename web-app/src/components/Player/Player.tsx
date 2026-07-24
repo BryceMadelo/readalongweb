@@ -20,10 +20,16 @@ export default function Player({
 }: PlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const rafRef = useRef<number | null>(null);
+  const onTimeUpdateRef = useRef(onTimeUpdate);
   
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+
+  // Keep callback ref updated
+  useEffect(() => {
+    onTimeUpdateRef.current = onTimeUpdate;
+  }, [onTimeUpdate]);
 
   // Handle external seek requests
   useEffect(() => {
@@ -39,7 +45,7 @@ export default function Player({
   const loop = () => {
     if (audioRef.current && isPlaying) {
       const currentMs = Math.floor(Math.max(0, audioRef.current.currentTime * 1000));
-      onTimeUpdate?.(currentMs);
+      onTimeUpdateRef.current?.(currentMs);
       setCurrentTime(audioRef.current.currentTime);
     }
     rafRef.current = requestAnimationFrame(loop);

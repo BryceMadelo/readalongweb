@@ -2,12 +2,12 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { load_epub_paragraphs, load_epub_images } from 'readalong-wasm';
 import { Upload, Book, Music, ArrowLeft } from 'lucide-react';
-import { saveBook, updateSyncMap, type ContentBlock } from '../../storage/db';
+import { saveBook, type ContentBlock } from '../../storage/db';
 import { useAlignment } from '../../context/AlignmentContext';
 
 export default function Import() {
   const navigate = useNavigate();
-  const { startJob, updateJob, completeJob, failJob } = useAlignment();
+  const { startJob, failJob } = useAlignment();
   const [epubFile, setEpubFile] = useState<File | null>(null);
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);

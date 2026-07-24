@@ -109,6 +109,20 @@ pub fn transcribe_audio(wav_path: &Path, model_path: &Path) -> Result<Vec<ASRTra
                     let token_t0 = token_data.t0 as f32 / 100.0;
                     let token_t1 = token_data.t1 as f32 / 100.0;
 
+                    // Strip whisper special tags (e.g., [_TT_1416], [_BEG_])
+                    // which happen when token timestamps are enabled.
+                    let mut cleaned_token = String::new();
+                    let mut in_bracket = false;
+                    for c in token_text.chars() {
+                        if c == '[' {
+                            in_bracket = true;
+                        } else if c == ']' {
+                            in_bracket = false;
+                        } else if !in_bracket {
+                            cleaned_token.push(c);
+                        }
+                    }
+
                     if token_text.starts_with(' ') && !current_word.is_empty() {
                         let word_text = current_word.trim().to_string();
                         if !word_text.is_empty() {
@@ -126,7 +140,7 @@ pub fn transcribe_audio(wav_path: &Path, model_path: &Path) -> Result<Vec<ASRTra
                         current_word_start = token_t0;
                     }
 
-                    current_word.push_str(&token_text);
+                    current_word.push_str(&cleaned_token);
 
                     // Basic heuristic: if the token ends with space, or we're at the end of segment, flush word
                     if token_text.ends_with(' ') || j == num_tokens - 1 {
