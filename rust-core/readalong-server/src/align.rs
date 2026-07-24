@@ -20,6 +20,7 @@ pub fn fuzzy_align(paragraphs: &[ContentBlock], asr_chunks: &[ASRTranscriptChunk
     }
 
     let mut asr_idx = 0;
+    let mut last_timestamp_ms = 0;
 
     for p in paragraphs {
         if p.tag == "img" || p.text.trim().is_empty() {
@@ -132,17 +133,21 @@ pub fn fuzzy_align(paragraphs: &[ContentBlock], asr_chunks: &[ASRTranscriptChunk
             }
 
             confidence = Some(conf);
-            timestamp_ms = (words[best_start_idx as usize].start * 1000.0).floor() as u64;
+            let raw_ts = (words[best_start_idx as usize].start * 1000.0).floor() as u64;
+            timestamp_ms = raw_ts.max(last_timestamp_ms);
 
             asr_idx = best_end_idx as usize;
         } else {
             confidence = Some(0.0);
-            timestamp_ms = if asr_idx > 0 && asr_idx < words.len() {
+            let raw_ts = if asr_idx > 0 && asr_idx < words.len() {
                 (words[asr_idx].start * 1000.0).floor() as u64
             } else {
                 0
             };
+            timestamp_ms = raw_ts.max(last_timestamp_ms);
         }
+
+        last_timestamp_ms = timestamp_ms;
 
         sync_points.push(SyncPoint {
             paragraph_id: p.id.clone(),
