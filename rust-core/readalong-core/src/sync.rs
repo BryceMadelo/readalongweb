@@ -17,6 +17,16 @@ pub struct SyncEngine {
 impl SyncEngine {
     /// Constructs a new SyncEngine, guaranteeing chronological order.
     pub fn new(mut points: Vec<SyncPoint>) -> Self {
+        // Enforce monotonicity in document order before sorting
+        let mut max_ts = 0;
+        for point in &mut points {
+            if point.timestamp_ms < max_ts {
+                point.timestamp_ms = max_ts;
+            } else {
+                max_ts = point.timestamp_ms;
+            }
+        }
+
         points.sort_by_key(|p| p.timestamp_ms);
 
         let mut by_paragraph = HashMap::with_capacity(points.len());
@@ -62,6 +72,11 @@ mod tests {
     fn setup_engine() -> SyncEngine {
         SyncEngine::new(vec![
             SyncPoint {
+                paragraph_id: "p1".to_string(),
+                timestamp_ms: 1000,
+                confidence: None,
+            },
+            SyncPoint {
                 paragraph_id: "p2".to_string(),
                 timestamp_ms: 4500,
                 confidence: None,
@@ -69,11 +84,6 @@ mod tests {
             SyncPoint {
                 paragraph_id: "p3".to_string(),
                 timestamp_ms: 8000,
-                confidence: None,
-            },
-            SyncPoint {
-                paragraph_id: "p1".to_string(),
-                timestamp_ms: 1000,
                 confidence: None,
             },
         ])
