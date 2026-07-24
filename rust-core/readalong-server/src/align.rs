@@ -38,6 +38,7 @@ pub fn fuzzy_align(paragraphs: &[ContentBlock], asr_chunks: &[ASRTranscriptChunk
         }
 
         let mut best_start_idx: i32 = -1;
+        let mut best_end_idx: i32 = -1;
         let mut max_match_count = 0;
 
         tracing::info!("Aligning paragraph: {:?}", p_words);
@@ -86,6 +87,7 @@ pub fn fuzzy_align(paragraphs: &[ContentBlock], asr_chunks: &[ASRTranscriptChunk
                 if match_count > max_match_count {
                     max_match_count = match_count;
                     best_start_idx = i as i32;
+                    best_end_idx = a_idx as i32;
                 }
 
                 // Early exit if perfect match found
@@ -132,7 +134,7 @@ pub fn fuzzy_align(paragraphs: &[ContentBlock], asr_chunks: &[ASRTranscriptChunk
             confidence = Some(conf);
             timestamp_ms = (words[best_start_idx as usize].start * 1000.0).floor() as u64;
 
-            asr_idx = best_start_idx as usize + max_match_count;
+            asr_idx = best_end_idx as usize;
         } else {
             confidence = Some(0.0);
             timestamp_ms = if asr_idx > 0 && asr_idx < words.len() {

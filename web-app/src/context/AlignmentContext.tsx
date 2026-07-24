@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, type ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { updateSyncMap } from '../storage/db';
 
 interface AlignmentJob {
   bookId: string;
@@ -32,6 +33,38 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
     setActiveJob((prev) => prev ? { ...prev, status: 'error', progressMsg: errorMsg } : null);
   };
   const clearJob = () => setActiveJob(null);
+
+  useEffect(() => {
+    if (!activeJob || activeJob.status !== 'processing') {
+      return;
+    }
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+        const statusRes = await fetch(`${API_URL}/status/${activeJob.bookId}`);
+        if (statusRes.ok) {
+          const data = await statusRes.json();
+          if (data.status === 'Processed Book') {
+            if (data.sync_map) {
+              await updateSyncMap(activeJob.bookId, data.sync_map);
+              completeJob();
+            } else {
+              failJob("Alignment finished but no sync map was returned.");
+            }
+          } else if (data.status.startsWith('Error')) {
+            failJob(data.status);
+          } else {
+            updateJob(data.status);
+          }
+        }
+      } catch (e) {
+        console.error("Polling error:", e);
+      }
+    }, 3000);
+
+    return () => clearInterval(pollInterval);
+  }, [activeJob?.bookId, activeJob?.status]);
 
   return (
     <AlignmentContext.Provider value={{ activeJob, startJob, updateJob, completeJob, failJob, clearJob }}>

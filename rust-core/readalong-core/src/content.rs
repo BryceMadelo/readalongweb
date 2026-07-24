@@ -25,8 +25,7 @@ pub fn parse_chapter_html(html_content: &str, title: Option<&str>, author: Optio
         
         if tag == "img" {
             let src = element.value().attr("src").map(|s| s.to_string());
-            let id = element.value().attr("id").map(|s| s.to_string())
-                .unwrap_or_else(|| format!("auto_img_{}", index));
+            let id = format!("auto_img_{}", index);
                 
             blocks.push(ContentBlock {
                 id,
@@ -76,12 +75,8 @@ pub fn parse_chapter_html(html_content: &str, title: Option<&str>, author: Optio
             continue;
         }
 
-        // Grab the existing ID, or generate a deterministic fallback ID for alignment
-        let id = element
-            .value()
-            .attr("id")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("auto_{}_{}", tag, index));
+        // Always generate a deterministic ID for alignment, ignoring native HTML IDs to ensure consistency
+        let id = format!("auto_{}_{}", tag, index);
 
         blocks.push(ContentBlock {
             id,
@@ -113,15 +108,15 @@ mod tests {
 
         let result = parse_chapter_html(html, None, None);
         assert_eq!(result.len(), 3);
-        assert_eq!(result[0].id, "h1");
+        assert_eq!(result[0].id, "auto_h1_0");
         assert_eq!(result[0].tag, "h1");
         assert_eq!(result[0].text, "Chapter Title");
         
-        assert_eq!(result[1].id, "p1");
+        assert_eq!(result[1].id, "auto_p_1");
         assert_eq!(result[1].tag, "p");
         assert_eq!(result[1].text, "First paragraph.");
         
-        assert_eq!(result[2].id, "img1");
+        assert_eq!(result[2].id, "auto_img_2");
         assert_eq!(result[2].tag, "img");
         assert_eq!(result[2].src, Some("test.jpg".to_string()));
     }
