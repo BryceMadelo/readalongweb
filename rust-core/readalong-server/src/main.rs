@@ -39,6 +39,9 @@ async fn main() {
         .route("/import", post(import::handle_import))
         .route("/status/:book_id", get(import::handle_status))
         .route("/sync_map/:book_id", post(import::handle_update_sync_map))
+        .route("/pause/:book_id", post(import::handle_pause))
+        .route("/resume/:book_id", post(import::handle_resume))
+        .route("/edit/:book_id", post(import::handle_edit))
         .with_state(db.clone())
         .layer(CorsLayer::permissive())
         .layer(axum::extract::DefaultBodyLimit::max(4 * 1024 * 1024 * 1024)); // 4GB limit

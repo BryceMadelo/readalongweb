@@ -5,13 +5,17 @@ interface AlignmentJob {
   bookId: string;
   bookTitle: string;
   progressMsg: string;
-  status: 'uploading' | 'processing' | 'complete' | 'error';
+  status: 'uploading' | 'processing' | 'paused' | 'complete' | 'error';
+  progressMin?: number;
+  totalMin?: number;
 }
 
 interface AlignmentContextType {
   activeJob: AlignmentJob | null;
   startJob: (job: AlignmentJob) => void;
-  updateJob: (progressMsg: string) => void;
+  updateJob: (progressMsg: string, progressMin?: number, totalMin?: number, status?: 'processing' | 'paused') => void;
+  pauseJob: () => Promise<void>;
+  resumeJob: () => Promise<void>;
   completeJob: () => void;
   failJob: (errorMsg: string) => void;
   clearJob: () => void;
@@ -20,14 +24,47 @@ interface AlignmentContextType {
 const AlignmentContext = createContext<AlignmentContextType | null>(null);
 
 export function AlignmentProvider({ children }: { children: ReactNode }) {
-  const [activeJob, setActiveJob] = useState<AlignmentJob | null>(null);
+  const [activeJob, setActiveJob] = useState<AlignmentJob | null>(() => {
+    const saved = localStorage.getItem('activeAlignmentJob');
+    return saved ? JSON.parse(saved) : null;
+  });
+
+  useEffect(() => {
+    if (activeJob) {
+      localStorage.setItem('activeAlignmentJob', JSON.stringify(activeJob));
+    } else {
+      localStorage.removeItem('activeAlignmentJob');
+    }
+  }, [activeJob]);
 
   const startJob = (job: AlignmentJob) => setActiveJob(job);
-  const updateJob = (progressMsg: string) => {
+  const updateJob = (progressMsg: string, progressMin?: number, totalMin?: number, status?: 'processing' | 'paused') => {
     setActiveJob((prev) => {
-      if (prev && prev.progressMsg === progressMsg) return prev;
-      return prev ? { ...prev, progressMsg } : null;
+      if (prev && prev.progressMsg === progressMsg && prev.status === (status || prev.status)) return prev;
+      return prev ? { ...prev, progressMsg, progressMin: progressMin ?? prev.progressMin, totalMin: totalMin ?? prev.totalMin, status: status || prev.status } : null;
     });
+  };
+
+  const pauseJob = async () => {
+    if (!activeJob) return;
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+      await fetch(`${API_URL}/pause/${activeJob.bookId}`, { method: 'POST' });
+      setActiveJob(prev => prev ? { ...prev, status: 'paused' } : null);
+    } catch (e) {
+      console.error("Failed to pause", e);
+    }
+  };
+
+  const resumeJob = async () => {
+    if (!activeJob) return;
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+      await fetch(`${API_URL}/resume/${activeJob.bookId}`, { method: 'POST' });
+      setActiveJob(prev => prev ? { ...prev, status: 'processing' } : null);
+    } catch (e) {
+      console.error("Failed to resume", e);
+    }
   };
   const completeJob = () => {
     setActiveJob((prev) => prev ? { ...prev, status: 'complete', progressMsg: 'Sync map generated successfully!' } : null);
@@ -61,9 +98,22 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
             }
           } else if (data.status.startsWith('Error')) {
             failJob(data.status);
+          } else if (data.status.startsWith('Processing|')) {
+            const parts = data.status.split('|');
+            const pMin = parseFloat(parts[1]);
+            const tMin = parseFloat(parts[2]);
+            // Format for every 10 minutes like user requested: e.g. 10m/700m
+            const pBucket = Math.floor(pMin / 10) * 10;
+            const tBucket = Math.floor(tMin / 10) * 10;
+            updateJob(`Processing (${pBucket}m / ${tBucket}m)`, pMin, tMin, 'processing');
+          } else if (data.status === 'Paused') {
+            updateJob('Paused', undefined, undefined, 'paused');
           } else {
             updateJob(data.status);
           }
+        } else if (statusRes.status === 404) {
+          // Job not found on server (e.g. server restarted), clear it
+          failJob("Alignment job lost (server restarted)");
         }
       } catch (e) {
         console.error("Polling error:", e);
@@ -74,39 +124,9 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
   }, [activeJob?.bookId, activeJob?.status]);
 
   return (
-    <AlignmentContext.Provider value={{ activeJob, startJob, updateJob, completeJob, failJob, clearJob }}>
+    <AlignmentContext.Provider value={{ activeJob, startJob, updateJob, pauseJob, resumeJob, completeJob, failJob, clearJob }}>
       {children}
-      {/* Global Toast for background alignment status */}
-      {activeJob && (
-        <div style={{
-          position: 'fixed',
-          bottom: '20px',
-          right: '20px',
-          backgroundColor: activeJob.status === 'error' ? 'var(--danger)' : 'var(--bg-tertiary)',
-          color: activeJob.status === 'error' ? 'white' : 'var(--text-primary)',
-          padding: '1rem',
-          borderRadius: '8px',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-          zIndex: 9999,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '0.5rem',
-          minWidth: '250px'
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-             <strong style={{ fontSize: '0.9rem' }}>Aligning "{activeJob.bookTitle}"</strong>
-             {(activeJob.status === 'complete' || activeJob.status === 'error') && (
-                 <button
-                    onClick={clearJob}
-                    style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', opacity: 0.8 }}
-                 >
-                     ✕
-                 </button>
-             )}
-          </div>
-          <span style={{ fontSize: '0.875rem', opacity: 0.9 }}>{activeJob.progressMsg}</span>
-        </div>
-      )}
+      {/* Toast removed as per design, progress is shown in Library and Reader */}
     </AlignmentContext.Provider>
   );
 }

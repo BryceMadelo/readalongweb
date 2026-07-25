@@ -61,6 +61,51 @@ pub async fn handle_update_sync_map(
     (StatusCode::OK, "Sync map updated successfully").into_response()
 }
 
+pub async fn handle_pause(
+    State(db): State<Arc<Mutex<LibraryDb>>>,
+    AxumPath(book_id): AxumPath<String>,
+) -> impl IntoResponse {
+    let db_lock = db.lock().unwrap();
+    if let Err(e) = db_lock.update_book_status(&book_id, "Paused") {
+        tracing::error!("Failed to pause book {}: {}", book_id, e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+    }
+    (StatusCode::OK, "Paused").into_response()
+}
+
+pub async fn handle_resume(
+    State(db): State<Arc<Mutex<LibraryDb>>>,
+    AxumPath(book_id): AxumPath<String>,
+) -> impl IntoResponse {
+    let db_lock = db.lock().unwrap();
+    // Assuming when we resume, the status goes back to Processing.
+    // The exact progress will be overwritten by the loop shortly.
+    if let Err(e) = db_lock.update_book_status(&book_id, "Processing...") {
+        tracing::error!("Failed to resume book {}: {}", book_id, e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+    }
+    (StatusCode::OK, "Resumed").into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct EditBookRequest {
+    pub title: String,
+    pub author: String,
+}
+
+pub async fn handle_edit(
+    State(db): State<Arc<Mutex<LibraryDb>>>,
+    AxumPath(book_id): AxumPath<String>,
+    Json(payload): Json<EditBookRequest>,
+) -> impl IntoResponse {
+    let db_lock = db.lock().unwrap();
+    if let Err(e) = db_lock.update_book_meta(&book_id, &payload.title, &payload.author) {
+        tracing::error!("Failed to edit book {}: {}", book_id, e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+    }
+    (StatusCode::OK, "Updated").into_response()
+}
+
 pub async fn handle_import(
     State(db): State<Arc<Mutex<LibraryDb>>>,
     mut multipart: Multipart,
@@ -332,7 +377,25 @@ pub async fn handle_import(
         let mut has_error = false;
         let mut chunk_index = 0;
 
+        let total_audio_duration_sec = chunker.total_duration_sec();
+
         loop {
+            // Check for pause status
+            {
+                let mut is_paused = false;
+                if let Ok(db_lock) = db.lock() {
+                    if let Ok(status) = db_lock.get_book_status(&book_id_clone) {
+                        if status == "Paused" {
+                            is_paused = true;
+                        }
+                    }
+                }
+                if is_paused {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    continue;
+                }
+            }
+
             // Process 3 minutes of audio at a time
             chunk_index += 1;
             tracing::info!("Attempting to read chunk {}...", chunk_index);
@@ -366,16 +429,14 @@ pub async fn handle_import(
                 total_time_sec = time_offset_sec + (audio_data.len() as f32 / 16000.0);
 
                 // Update DB with intermediate progress
-                let status_msg =
-                    format!("Processing (Aligned up to {:.1}m)", total_time_sec / 60.0);
+                let current_min = total_time_sec / 60.0;
+                let total_min = total_audio_duration_sec / 60.0;
+                let status_msg = format!("Processing|{}|{}", current_min, total_min);
+                
                 {
                     let db_lock = db.lock().unwrap();
-                    if let Err(e) = db_lock.insert_book(
+                    if let Err(e) = db_lock.update_book_status(
                         &book_id_clone,
-                        "Unknown Title",
-                        "Unknown Author",
-                        epub_path.to_str().unwrap(),
-                        audio_path.to_str().unwrap(),
                         &status_msg,
                     ) {
                         tracing::error!("Failed to update partial book status: {}", e);

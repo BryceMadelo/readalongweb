@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BookOpen, Plus, Clock, Trash2 } from 'lucide-react';
+import { BookOpen, Plus } from 'lucide-react';
 import { getBooks, deleteBook, type BookMeta } from '../../storage/db';
+import { BookCard } from './BookCard';
 
 export default function Library() {
   const [books, setBooks] = useState<BookMeta[]>([]);
@@ -21,12 +22,15 @@ export default function Library() {
     loadBooks();
   }, []);
 
-  const handleDelete = async (e: React.MouseEvent, bookId: string) => {
-    e.preventDefault(); // Prevent navigating to the reader
+  const handleDelete = async (bookId: string) => {
     if (window.confirm("Are you sure you want to delete this book?")) {
       await deleteBook(bookId);
       setBooks(books.filter(b => b.id !== bookId));
     }
+  };
+
+  const handleUpdateMeta = (bookId: string, title: string, author: string) => {
+    setBooks(books.map(b => b.id === bookId ? { ...b, title, author } : b));
   };
 
   return (
@@ -56,40 +60,12 @@ export default function Library() {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '2rem' }}>
           {books.map(book => (
-            <Link to={`/reader/${book.id}`} key={book.id} style={{ textDecoration: 'none', color: 'inherit' }}>
-              <div className="card" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                <div style={{ 
-                  backgroundColor: 'var(--bg-tertiary)', 
-                  height: '200px', 
-                  borderRadius: '8px', 
-                  marginBottom: '1rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  background: book.coverImage ? `url(${book.coverImage}) center/cover` : 'linear-gradient(135deg, var(--accent-light), var(--accent-primary))'
-                }}>
-                  {!book.coverImage && <BookOpen size={48} style={{ color: 'white', opacity: 0.8 }} />}
-                </div>
-                
-                <h3 style={{ fontSize: '1.25rem', marginBottom: '0.25rem', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                  {book.title}
-                </h3>
-                
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'auto', paddingTop: '1rem', color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <Clock size={16} />
-                    <span>Added {new Date(book.dateAdded).toLocaleDateString()}</span>
-                  </div>
-                  <button 
-                    onClick={(e) => handleDelete(e, book.id)}
-                    style={{ background: 'transparent', border: 'none', color: 'var(--danger)', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '0.25rem' }}
-                    title="Delete Book"
-                  >
-                    <Trash2 size={18} />
-                  </button>
-                </div>
-              </div>
-            </Link>
+            <BookCard 
+              key={book.id} 
+              book={book} 
+              onDelete={handleDelete}
+              onUpdate={handleUpdateMeta}
+            />
           ))}
         </div>
       )}

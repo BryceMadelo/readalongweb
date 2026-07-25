@@ -68,6 +68,10 @@ impl AudioChunker {
         })
     }
 
+    pub fn total_duration_sec(&self) -> f32 {
+        self.reader.len() as f32 / self.sample_rate as f32
+    }
+
     pub fn next_chunk(&mut self, duration_sec: u32) -> Result<Option<(Vec<f32>, f32)>, String> {
         let max_samples = (self.sample_rate * duration_sec) as usize;
         let mut audio_data = Vec::with_capacity(max_samples);

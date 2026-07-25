@@ -136,20 +136,22 @@ h3 { font-size: 1.5rem; margin-bottom: 0.5rem; }
 .reader-block {
   padding: 0.75rem 1rem;
   border-radius: 8px;
-  font-size: 1.125rem;
+  font-size: var(--reader-font-size, 1.125rem);
+  font-family: var(--reader-font, inherit);
+  line-height: var(--reader-line-height, 1.6);
+  text-align: var(--reader-align, justify);
+  color: var(--reader-text-color, var(--text-secondary));
   transition: all 0.2s ease;
   margin-bottom: 0.5rem;
-  color: var(--text-secondary);
-  text-align: justify;
 }
 
 .reader-block.heading {
   text-align: center;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--reader-heading-color, var(--text-primary));
   margin-top: 2rem;
   margin-bottom: 1rem;
-  font-family: serif;
+  font-family: var(--reader-font, serif);
 }
 
 .reader-block.active {
@@ -173,4 +175,26 @@ h3 { font-size: 1.5rem; margin-bottom: 0.5rem; }
 .app-main {
   min-height: calc(100vh - 160px);
   padding: 2rem 0;
+}
+
+.player-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  opacity: 0;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  transform: translateY(20px);
+}
+
+.player-overlay:hover, .player-overlay:focus-within {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.reader-inner {
+  max-width: var(--reader-max-width, 800px);
+  margin: 0 auto;
+  width: 100%;
 }

@@ -102,6 +102,31 @@ export async function updateSyncMap(bookId: string, syncMap: SyncPoint[]) {
   await tx.done;
 }
 
+export async function updateBookMeta(bookId: string, title: string, author: string) {
+  const db = await initDB();
+  const tx = db.transaction('books', 'readwrite');
+  const store = tx.objectStore('books');
+  const meta = await store.get(bookId);
+  if (meta) {
+    meta.title = title;
+    meta.author = author;
+    await store.put(meta);
+  }
+  await tx.done;
+}
+
+export async function updateBookProgress(bookId: string, progress: number) {
+  const db = await initDB();
+  const tx = db.transaction('books', 'readwrite');
+  const store = tx.objectStore('books');
+  const meta = await store.get(bookId);
+  if (meta) {
+    meta.progress = progress;
+    await store.put(meta);
+  }
+  await tx.done;
+}
+
 export async function getBooks(): Promise<BookMeta[]> {
   const db = await initDB();
   return db.getAllFromIndex('books', 'by-date');

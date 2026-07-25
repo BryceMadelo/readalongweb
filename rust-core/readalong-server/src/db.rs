@@ -67,6 +67,22 @@ impl LibraryDb {
         Ok(())
     }
 
+    pub fn update_book_status(&self, book_id: &str, status: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE books SET status = ?2 WHERE id = ?1",
+            params![book_id, status],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_book_meta(&self, book_id: &str, title: &str, author: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE books SET title = ?2, author = ?3 WHERE id = ?1",
+            params![book_id, title, author],
+        )?;
+        Ok(())
+    }
+
     pub fn save_sync_map(&self, book_id: &str, points: &[SyncPoint]) -> Result<()> {
         let json = serde_json::to_string(points).map_err(|e| {
             rusqlite::Error::ToSqlConversionFailure(Box::new(e))
