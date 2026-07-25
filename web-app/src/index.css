@@ -155,7 +155,7 @@ h3 { font-size: 1.5rem; margin-bottom: 0.5rem; }
 }
 
 .reader-block.active {
-  background-color: var(--highlight-bg);
+  background-color: var(--reader-guide-color, var(--highlight-bg));
   color: var(--text-primary);
   transform: scale(1.02);
   box-shadow: 0 4px 12px -4px rgba(0,0,0,0.1);

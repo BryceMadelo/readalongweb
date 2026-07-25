@@ -2,13 +2,14 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { PlaybackSync } from 'readalong-wasm';
-import { ArrowLeft, Settings2, List, Edit3 } from 'lucide-react';
+import { Settings2, Menu, Clock } from 'lucide-react';
 import { getBookData, updateBookProgress, type BookMeta, type ContentBlock, type SyncPoint } from '../../storage/db';
 import Player from '../../components/Player/Player';
 import { useAlignment } from '../../context/AlignmentContext';
 import { ReaderSettings } from './ReaderSettings';
 import { type ReaderSettingsState, defaultSettings } from './types';
 import { ReaderTOC } from './ReaderTOC';
+import { TTSControls } from '../../components/TTSControls';
 
 export default function Reader() {
   const { id } = useParams<{ id: string }>();
@@ -24,6 +25,7 @@ export default function Reader() {
 
   const [showSettings, setShowSettings] = useState(false);
   const [showTOC, setShowTOC] = useState(false);
+  const [ttsWordRange, setTtsWordRange] = useState<{ start: number, length: number } | null>(null);
   const [settings, setSettings] = useState<ReaderSettingsState>(() => {
     const saved = localStorage.getItem('reader-settings');
     return saved ? JSON.parse(saved) : defaultSettings;
@@ -198,6 +200,10 @@ export default function Reader() {
   const pDisplay = Math.floor(pMin);
   const tDisplay = Math.floor(tMin);
 
+  useEffect(() => {
+    localStorage.setItem('reader-settings', JSON.stringify(settings));
+  }, [settings]);
+
   const getReaderStyles = (): React.CSSProperties => {
     return {
       '--reader-bg': settings.appearance === 'light' ? '#ffffff' : settings.appearance === 'sepia' ? '#fbf0d9' : '#1a1a1a',
@@ -208,6 +214,7 @@ export default function Reader() {
       '--reader-line-height': settings.textHeight === 'small' ? '1.4' : settings.textHeight === 'medium' ? '1.6' : '2.0',
       '--reader-align': settings.alignment,
       '--reader-max-width': settings.pageMargins === 'narrow' ? '1000px' : settings.pageMargins === 'medium' ? '800px' : '600px',
+      '--reader-guide-color': settings.guideColor,
       height: '100%',
       backgroundColor: 'transparent',
     } as React.CSSProperties;
@@ -230,32 +237,40 @@ export default function Reader() {
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
         
         {/* Header */}
-        <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem', backgroundColor: 'var(--glass-bg)', backdropFilter: 'blur(12px)', borderBottom: '1px solid var(--border-color)', zIndex: 10 }}>
+        <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.5rem', backgroundColor: 'var(--glass-bg)', backdropFilter: 'blur(12px)', borderBottom: '1px solid var(--border-color)', zIndex: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <Link to="/" style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center' }}>
-              <ArrowLeft size={24} />
-            </Link>
-            <button onClick={() => setShowTOC(!showTOC)} style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex' }}>
-              <List size={24} />
+            <button onClick={() => setShowTOC(!showTOC)} style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
+              <Menu size={24} />
             </button>
-            <h2 style={{ margin: 0, fontSize: '1.2rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '300px' }}>
-              {meta.title}
-            </h2>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <Link 
-              to={`/align/${meta.id}`} 
-              style={{ background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '0.4rem 0.8rem', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', textDecoration: 'none' }}
-              onMouseOver={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'}
-              onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-            >
-              <Edit3 size={16} />
-              <span style={{ fontSize: '0.85rem', display: window.innerWidth > 768 ? 'inline' : 'none' }}>Fix sync</span>
+            <Link to="/" style={{ color: 'var(--accent-primary)', textDecoration: 'none', fontWeight: 'bold', fontSize: '1.25rem', display: 'flex', alignItems: 'center' }}>
+              ReadAlong
             </Link>
+            <div style={{ width: '1px', height: '24px', background: 'var(--border-color)', margin: '0 0.5rem' }} />
+            <div style={{ display: 'flex', alignItems: 'center', fontSize: '0.9rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '300px' }}>
+              <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{meta.title}</span>
+              <span style={{ margin: '0 0.5rem' }}>/</span>
+              Chapter X
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+              <Clock size={16} /> 12 min left
+            </div>
+
+            <TTSControls
+              text={paragraphs[activeParagraphIndex ?? 0]?.text || ''}
+              onBoundary={(charIndex, length) => setTtsWordRange({ start: charIndex, length })}
+              onEnd={() => setTtsWordRange(null)}
+            />
+
             <button onClick={() => setShowSettings(!showSettings)} style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Settings2 size={20} />
-              <span style={{ fontSize: '0.9rem', display: window.innerWidth > 600 ? 'inline' : 'none' }}>Settings</span>
             </button>
+
+            <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent-light), var(--accent-primary))', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 'bold', fontSize: '0.85rem' }}>
+              A
+            </div>
           </div>
         </header>
 
@@ -318,6 +333,23 @@ export default function Reader() {
                 const isHeading = block.tag.startsWith('h');
                 const Tag = block.tag as React.ElementType;
                 
+                const renderText = () => {
+                  if (isActive && ttsWordRange && !isHeading) {
+                    const before = block.text.substring(0, ttsWordRange.start);
+                    const word = block.text.substring(ttsWordRange.start, ttsWordRange.start + ttsWordRange.length);
+                    const after = block.text.substring(ttsWordRange.start + ttsWordRange.length);
+
+                    return (
+                      <>
+                        {before}
+                        <span style={{ backgroundColor: 'var(--accent-primary)', color: 'white', borderRadius: '4px', padding: '0 2px' }}>{word}</span>
+                        {after}
+                      </>
+                    );
+                  }
+                  return block.text;
+                };
+
                 return (
                   <div className="reader-inner" style={{ paddingBottom: index === paragraphs.length - 1 ? '160px' : '0' }}>
                     <div 
@@ -325,7 +357,7 @@ export default function Reader() {
                       onClick={() => handleTextTap(index)}
                       style={{ cursor: 'pointer' }}
                     >
-                      <Tag>{block.text}</Tag>
+                      <Tag>{renderText()}</Tag>
                     </div>
                   </div>
                 );
