@@ -102,10 +102,9 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
             const parts = data.status.split('|');
             const pMin = parseFloat(parts[1]);
             const tMin = parseFloat(parts[2]);
-            // Format for every 10 minutes like user requested: e.g. 10m/700m
-            const pBucket = Math.floor(pMin / 10) * 10;
-            const tBucket = Math.floor(tMin / 10) * 10;
-            updateJob(`Processing (${pBucket}m / ${tBucket}m)`, pMin, tMin, 'processing');
+            const pDisplay = Math.floor(pMin);
+            const tDisplay = Math.floor(tMin);
+            updateJob(`Processing (${pDisplay}m / ${tDisplay}m)`, pMin, tMin, 'processing');
           } else if (data.status === 'Paused') {
             updateJob('Paused', undefined, undefined, 'paused');
           } else {

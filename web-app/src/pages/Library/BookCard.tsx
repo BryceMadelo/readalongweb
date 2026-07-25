@@ -17,14 +17,14 @@ export function BookCard({ book, onDelete, onUpdate }: BookCardProps) {
   const [editTitle, setEditTitle] = useState(book.title);
   const [editAuthor, setEditAuthor] = useState(book.author);
 
-  const isAligningThis = activeJob?.bookId === book.id && activeJob?.status !== 'complete' && activeJob?.status !== 'failed';
+  const isAligningThis = activeJob?.bookId === book.id && activeJob?.status !== 'complete' && activeJob?.status !== 'error';
   const isPaused = isAligningThis && activeJob?.status === 'paused';
   const pMin = isAligningThis ? (activeJob?.progressMin || 0) : 0;
   const tMin = isAligningThis ? (activeJob?.totalMin || 0) : 0;
   
-  // Use buckets for UI display like 10m/700m if it's aligning
-  const pBucket = Math.floor(pMin / 10) * 10;
-  const tBucket = Math.floor(tMin / 10) * 10;
+  // Display actual progress so it updates frequently
+  const pDisplay = Math.floor(pMin);
+  const tDisplay = Math.floor(tMin);
   const isReadyToRead = !isAligningThis || pMin >= 10; // Must be completed, or if aligning, have > 10m
 
   const handleSaveEdit = async () => {
@@ -116,7 +116,14 @@ export function BookCard({ book, onDelete, onUpdate }: BookCardProps) {
                 {isPaused ? 'Paused...' : 'Aligning...'}
               </div>
               <button 
-                onClick={(e) => { e.preventDefault(); isPaused ? resumeJob() : pauseJob(); }}
+                onClick={(e) => { 
+                  e.preventDefault(); 
+                  if (isPaused) {
+                    resumeJob();
+                  } else {
+                    pauseJob();
+                  }
+                }}
                 style={{ background: 'var(--bg-secondary)', border: 'none', borderRadius: '50%', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--accent-primary)' }}
               >
                 {isPaused ? <Play size={16} /> : <Pause size={16} />}
@@ -128,7 +135,7 @@ export function BookCard({ book, onDelete, onUpdate }: BookCardProps) {
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-              <span>{pBucket}m / {tBucket}m</span>
+              <span>{pDisplay}m / {tDisplay}m</span>
               {isReadyToRead ? (
                 <span style={{ color: 'var(--success)', display: 'flex', alignItems: 'center', gap: '4px' }}>
                   <CheckCircle size={12} /> Unlocked

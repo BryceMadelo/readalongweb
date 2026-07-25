@@ -2,11 +2,12 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { PlaybackSync } from 'readalong-wasm';
-import { ArrowLeft, Settings2, List } from 'lucide-react';
+import { ArrowLeft, Settings2, List, Edit3 } from 'lucide-react';
 import { getBookData, updateBookProgress, type BookMeta, type ContentBlock, type SyncPoint } from '../../storage/db';
 import Player from '../../components/Player/Player';
 import { useAlignment } from '../../context/AlignmentContext';
-import { ReaderSettings, type ReaderSettingsState, defaultSettings } from './ReaderSettings';
+import { ReaderSettings } from './ReaderSettings';
+import { type ReaderSettingsState, defaultSettings } from './types';
 import { ReaderTOC } from './ReaderTOC';
 
 export default function Reader() {
@@ -194,8 +195,8 @@ export default function Reader() {
   const isAligningThis = activeJob?.bookId === id && (activeJob?.status === 'processing' || activeJob?.status === 'paused');
   const pMin = activeJob?.progressMin || 0;
   const tMin = activeJob?.totalMin || 0;
-  const pBucket = Math.floor(pMin / 10) * 10;
-  const tBucket = Math.floor(tMin / 10) * 10;
+  const pDisplay = Math.floor(pMin);
+  const tDisplay = Math.floor(tMin);
 
   const getReaderStyles = (): React.CSSProperties => {
     return {
@@ -241,10 +242,21 @@ export default function Reader() {
               {meta.title}
             </h2>
           </div>
-          <button onClick={() => setShowSettings(!showSettings)} style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Settings2 size={20} />
-            <span style={{ fontSize: '0.9rem', display: window.innerWidth > 600 ? 'inline' : 'none' }}>Settings</span>
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <Link 
+              to={`/align/${meta.id}`} 
+              style={{ background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '0.4rem 0.8rem', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', textDecoration: 'none' }}
+              onMouseOver={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'}
+              onMouseOut={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+            >
+              <Edit3 size={16} />
+              <span style={{ fontSize: '0.85rem', display: window.innerWidth > 768 ? 'inline' : 'none' }}>Fix sync</span>
+            </Link>
+            <button onClick={() => setShowSettings(!showSettings)} style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Settings2 size={20} />
+              <span style={{ fontSize: '0.9rem', display: window.innerWidth > 600 ? 'inline' : 'none' }}>Settings</span>
+            </button>
+          </div>
         </header>
 
         {/* Alignment Progress Bar (Sticky Top) */}
@@ -256,7 +268,7 @@ export default function Reader() {
              <div style={{ flex: 1, height: '6px', background: 'var(--border-color)', borderRadius: '3px', overflow: 'hidden' }}>
                <div style={{ height: '100%', background: 'var(--accent-primary)', width: `${tMin > 0 ? (pMin / tMin) * 100 : 0}%`, transition: 'width 0.3s ease' }} />
              </div>
-             <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{pBucket}m / {tBucket}m</div>
+             <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{pDisplay}m / {tDisplay}m</div>
           </div>
         )}
 
