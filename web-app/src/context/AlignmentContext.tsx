@@ -24,7 +24,10 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
 
   const startJob = (job: AlignmentJob) => setActiveJob(job);
   const updateJob = (progressMsg: string) => {
-    setActiveJob((prev) => prev ? { ...prev, progressMsg } : null);
+    setActiveJob((prev) => {
+      if (prev && prev.progressMsg === progressMsg) return prev;
+      return prev ? { ...prev, progressMsg } : null;
+    });
   };
   const completeJob = () => {
     setActiveJob((prev) => prev ? { ...prev, status: 'complete', progressMsg: 'Sync map generated successfully!' } : null);

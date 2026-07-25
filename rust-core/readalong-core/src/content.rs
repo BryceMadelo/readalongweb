@@ -87,7 +87,40 @@ pub fn parse_chapter_html(html_content: &str, title: Option<&str>, author: Optio
         });
     }
 
-    blocks
+    let mut merged_blocks: Vec<ContentBlock> = Vec::new();
+
+    for block in blocks {
+        if let Some(last_block) = merged_blocks.last_mut() {
+            if last_block.tag != "img" && last_block.tag == block.tag {
+                let last_text = last_block.text.trim();
+                let ends_with_punc = last_text.ends_with(|c: char| {
+                    matches!(c, '.' | '!' | '?' | '"' | '\'' | '”' | '’' | ':' | ';' | '-' | '…' | ']' | ')')
+                });
+
+                let last_word_count = last_text.split_whitespace().count();
+                let current_word_count = block.text.split_whitespace().count();
+
+                let first_char_is_lowercase = block
+                    .text
+                    .trim()
+                    .chars()
+                    .find(|c| c.is_alphabetic())
+                    .map_or(false, |c| c.is_lowercase());
+
+                let is_short_fragment = last_word_count < 5 && current_word_count < 5;
+
+                if !ends_with_punc && (is_short_fragment || first_char_is_lowercase) {
+                    last_block.text.push(' ');
+                    last_block.text.push_str(block.text.trim());
+                    last_block.needs_review = last_block.needs_review || block.needs_review;
+                    continue;
+                }
+            }
+        }
+        merged_blocks.push(block);
+    }
+
+    merged_blocks
 }
 
 #[cfg(test)]
@@ -150,5 +183,28 @@ mod tests {
 
         assert_eq!(result[2].text, "John Doe");
         assert_eq!(result[2].needs_review, true);
+    }
+
+    #[test]
+    fn test_merges_short_paragraphs() {
+        let html = r#"
+            <html>
+                <body>
+                    <p>The</p>
+                    <p>Assassin</p>
+                    <p>and the</p>
+                    <p>Pirate Lord</p>
+                    <h2>Chapter 1</h2>
+                </body>
+            </html>
+        "#;
+
+        let result = parse_chapter_html(html, None, None);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].text, "The Assassin and the Pirate Lord");
+        assert_eq!(result[0].tag, "p");
+        assert_eq!(result[1].text, "Chapter 1");
+        assert_eq!(result[1].tag, "h2");
     }
 }

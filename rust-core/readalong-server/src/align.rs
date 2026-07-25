@@ -36,7 +36,7 @@ impl FuzzyAligner {
         self.sync_points.clone()
     }
 
-    pub fn align_current_buffer(&mut self) {
+    pub fn align_current_buffer(&mut self, is_final: bool) {
         if self.words.is_empty() {
             return;
         }
@@ -71,9 +71,18 @@ impl FuzzyAligner {
             let mut best_end_idx: i32 = -1;
             let mut max_match_count = 0;
 
+            let min_required = if p_words.len() <= 3 {
+                p_words.len()
+            } else if p_words.len() <= 7 {
+                (p_words.len() as f32 * 0.6).ceil() as usize
+            } else {
+                ((p_words.len() as f32 * 0.4).ceil() as usize).max(4)
+            };
+
             let search_window_size = 1000;
-            // Stop early if we don't have enough words in the buffer for a full search window
-            if self.asr_idx + 100 > self.words.len() {
+            // Stop early if we don't have enough words in the buffer for a full search window,
+            // UNLESS this is the final chunk (in which case we must search what we have).
+            if !is_final && self.asr_idx + 100 > self.words.len() {
                 break;
             }
 
@@ -154,7 +163,7 @@ impl FuzzyAligner {
                     }
                 }
 
-                if max_match_count < min(3, p_words.len()) {
+                if max_match_count < min_required {
                     window_start = window_end;
                     window_end = min(window_start + search_window_size, self.words.len());
                     best_start_idx = -1;
@@ -170,8 +179,9 @@ impl FuzzyAligner {
 
             // If we didn't find a strong match, we need to decide whether to stop and wait for more words,
             // or just skip this paragraph.
-            // If the buffer doesn't have many words left after our search window, we wait for more.
-            if max_match_count < min(3, p_words.len()) && self.words.len() - self.asr_idx < 1000 {
+            // If the buffer doesn't have many words left after our search window, we wait for more
+            // UNLESS this is the final chunk.
+            if !is_final && max_match_count < min_required && self.words.len() - self.asr_idx < 1000 {
                 // Not a great match, and we are near the end of the current buffer. Let's wait for more chunks.
                 break;
             }
@@ -232,17 +242,15 @@ impl FuzzyAligner {
     }
 
     pub fn finish(&mut self) {
-        // Any remaining paragraphs get dummy sync points
-        while self.current_p_idx < self.paragraphs.len() {
-            let p = &self.paragraphs[self.current_p_idx];
-            if p.tag != "img" && !p.text.trim().is_empty() {
-                self.sync_points.push(SyncPoint {
-                    paragraph_id: p.id.clone(),
-                    timestamp_ms: self.last_timestamp_ms,
-                    confidence: Some(0.0),
-                });
-            }
-            self.current_p_idx += 1;
-        }
+        // Do NOT emit fake sync points for unmatched tail paragraphs.
+        // Previously this stuffed every remaining paragraph with last_timestamp_ms,
+        // causing all of them (e.g. "Bye bye!") to cluster at the same timestamp.
+        // The SyncEngine binary search would then return the LAST of those duplicates
+        // as the active paragraph for any time >= that timestamp, producing false
+        // highlights far earlier than the audio actually reaches that content.
+        //
+        // Paragraphs that were never matched simply have no sync point. They won't
+        // auto-highlight during playback, which is correct: we don't know when they play.
+        // Text→Audio seeking for those paragraphs is a fair trade-off.
     }
 }

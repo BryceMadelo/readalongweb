@@ -329,32 +329,38 @@ pub async fn handle_import(
 
         let mut aligner = FuzzyAligner::new(all_paragraphs);
         let mut total_time_sec = 0.0;
+        let mut has_error = false;
+        let mut chunk_index = 0;
 
         loop {
             // Process 3 minutes of audio at a time
+            chunk_index += 1;
+            tracing::info!("Attempting to read chunk {}...", chunk_index);
             let chunk_res = match chunker.next_chunk(180) {
                 Ok(c) => c,
                 Err(e) => {
-                    tracing::error!("Failed to read next audio chunk: {}", e);
+                    tracing::error!("Failed to read chunk {}: {}", chunk_index, e);
                     set_error("Audio read failed");
+                    has_error = true;
                     break;
                 }
             };
 
             if let Some((audio_data, time_offset_sec)) = chunk_res {
-                tracing::info!("Processing chunk at offset {}", time_offset_sec);
+                tracing::info!("Processing chunk {} at offset {:.1}s ({} samples)", chunk_index, time_offset_sec, audio_data.len());
                 let asr_chunks =
                     match transcribe_audio_chunk(&audio_data, time_offset_sec, &mut state) {
                         Ok(c) => c,
                         Err(e) => {
-                            tracing::error!("Transcription failed: {}", e);
+                            tracing::error!("Transcription failed on chunk {}: {}", chunk_index, e);
                             set_error("Transcription failed");
+                            has_error = true;
                             break;
                         }
                     };
 
                 aligner.add_chunks(asr_chunks);
-                aligner.align_current_buffer();
+                aligner.align_current_buffer(false);
 
                 let current_sync = aligner.get_sync_points();
                 total_time_sec = time_offset_sec + (audio_data.len() as f32 / 16000.0);
@@ -379,10 +385,18 @@ pub async fn handle_import(
                     }
                 }
             } else {
+                tracing::info!("Chunk {} returned no audio, EOF reached.", chunk_index);
                 break; // End of audio
             }
         }
 
+        if has_error {
+            tracing::error!("Aborting finalization due to an error during chunking.");
+            return; // Do not overwrite the error state with "Processed Book"
+        }
+
+        // Force alignment of any remaining buffered words now that we know there are no more chunks
+        aligner.align_current_buffer(true);
         aligner.finish();
         let final_sync = aligner.get_sync_points();
 

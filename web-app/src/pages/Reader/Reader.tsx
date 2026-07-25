@@ -120,7 +120,7 @@ export default function Reader() {
   // Poll for updates if this book is actively processing
   useEffect(() => {
     if (id && activeJob?.bookId === id && activeJob.status === 'processing') {
-      const interval = setInterval(async () => {
+      const poll = async () => {
         const data = await getBookData(id);
         if (data.syncMap && data.syncMap.length > 0) {
           setSyncPoints(data.syncMap);
@@ -131,10 +131,13 @@ export default function Reader() {
           engine.build_engine();
           syncEngineRef.current = engine;
         }
-      }, 3000);
+      };
+      
+      poll(); // initial check immediately
+      const interval = setInterval(poll, 2000);
       return () => clearInterval(interval);
     }
-  }, [id, activeJob]);
+  }, [id, activeJob?.bookId, activeJob?.status]);
 
   const handleTextTap = (index: number) => {
     const paragraphId = paragraphIdMap.current.get(index);
