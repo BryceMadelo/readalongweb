@@ -5,7 +5,7 @@ interface AlignmentJob {
   bookId: string;
   bookTitle: string;
   progressMsg: string;
-  status: 'processing' | 'complete' | 'error';
+  status: 'uploading' | 'processing' | 'complete' | 'error';
 }
 
 interface AlignmentContextType {
@@ -45,9 +45,13 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
         const statusRes = await fetch(`${API_URL}/status/${activeJob.bookId}`);
         if (statusRes.ok) {
           const data = await statusRes.json();
+          // Always save intermediate sync points so playback works earlier
+          if (data.sync_map && data.sync_map.length > 0) {
+            await updateSyncMap(activeJob.bookId, data.sync_map);
+          }
+          
           if (data.status === 'Processed Book') {
             if (data.sync_map) {
-              await updateSyncMap(activeJob.bookId, data.sync_map);
               completeJob();
             } else {
               failJob("Alignment finished but no sync map was returned.");
@@ -61,7 +65,7 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
       } catch (e) {
         console.error("Polling error:", e);
       }
-    }, 3000);
+    }, 2000);
 
     return () => clearInterval(pollInterval);
   }, [activeJob?.bookId, activeJob?.status]);

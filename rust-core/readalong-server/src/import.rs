@@ -1,17 +1,17 @@
 use axum::{
+    Json,
     extract::{Multipart, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
+use crate::align::FuzzyAligner;
 use crate::db::LibraryDb;
-use crate::transcribe::{extract_audio_to_wav, transcribe_audio};
-use crate::align::fuzzy_align;
+use crate::transcribe::{AudioChunker, extract_audio_to_wav, transcribe_audio_chunk};
 
 #[derive(Serialize)]
 pub struct ImportResponse {
@@ -37,19 +37,10 @@ pub async fn handle_status(
         Err(_) => return (StatusCode::NOT_FOUND, "Book not found").into_response(),
     };
 
-    let sync_map = if status == "Processed Book" {
-        db_lock.get_sync_map(&book_id).ok()
-    } else {
-        None
-    };
+    // Always return sync map if it exists, so client can get partial progress
+    let sync_map = db_lock.get_sync_map(&book_id).ok();
 
-    (
-        StatusCode::OK,
-        Json(StatusResponse {
-            status,
-            sync_map,
-        }),
-    ).into_response()
+    (StatusCode::OK, Json(StatusResponse { status, sync_map })).into_response()
 }
 
 pub async fn handle_update_sync_map(
@@ -63,7 +54,8 @@ pub async fn handle_update_sync_map(
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Database error: {}", e),
-        ).into_response();
+        )
+            .into_response();
     }
 
     (StatusCode::OK, "Sync map updated successfully").into_response()
@@ -75,13 +67,16 @@ pub async fn handle_import(
 ) -> impl IntoResponse {
     let book_id = Uuid::new_v4().to_string();
     let data_dir_str = std::env::var("DATA_DIR").unwrap_or_else(|_| ".".to_string());
-    let tmp_dir = PathBuf::from(data_dir_str).join("tmp_uploads").join(&book_id);
+    let tmp_dir = PathBuf::from(data_dir_str)
+        .join("tmp_uploads")
+        .join(&book_id);
 
     if let Err(e) = tokio::fs::create_dir_all(&tmp_dir).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to create directory: {}", e),
-        ).into_response();
+        )
+            .into_response();
     }
 
     let mut epub_path = None;
@@ -92,7 +87,10 @@ pub async fn handle_import(
         let file_name = field.file_name().unwrap_or("unknown").to_string();
 
         let is_epub = name == "epub" || file_name.ends_with(".epub");
-        let is_audio = name == "audio" || file_name.ends_with(".mp3") || file_name.ends_with(".m4b") || file_name.ends_with(".m4a");
+        let is_audio = name == "audio"
+            || file_name.ends_with(".mp3")
+            || file_name.ends_with(".m4b")
+            || file_name.ends_with(".m4a");
 
         let path = if is_epub {
             tmp_dir.join("upload.epub")
@@ -148,15 +146,33 @@ pub async fn handle_import(
         // Update database status: Processing (in a real app, we'd have a status column)
         {
             let db_lock = db.lock().unwrap();
-            if let Err(e) = db_lock.insert_book(&book_id_clone, "Unknown Title", "Unknown", epub_path.to_str().unwrap(), audio_path.to_str().unwrap(), "Processing...") {
-                tracing::error!("Failed to insert initial book state {}: {}", book_id_clone, e);
+            if let Err(e) = db_lock.insert_book(
+                &book_id_clone,
+                "Unknown Title",
+                "Unknown",
+                epub_path.to_str().unwrap(),
+                audio_path.to_str().unwrap(),
+                "Processing...",
+            ) {
+                tracing::error!(
+                    "Failed to insert initial book state {}: {}",
+                    book_id_clone,
+                    e
+                );
             }
         }
 
         // Helper to mark failure
         let set_error = |err_msg: &str| {
             let db_lock = db.lock().unwrap();
-            if let Err(e) = db_lock.insert_book(&book_id_clone, "Unknown Title", "Unknown", epub_path.to_str().unwrap(), audio_path.to_str().unwrap(), &format!("Error: {}", err_msg)) {
+            if let Err(e) = db_lock.insert_book(
+                &book_id_clone,
+                "Unknown Title",
+                "Unknown",
+                epub_path.to_str().unwrap(),
+                audio_path.to_str().unwrap(),
+                &format!("Error: {}", err_msg),
+            ) {
                 tracing::error!("Failed to update error state for {}: {}", book_id_clone, e);
             }
         };
@@ -172,25 +188,6 @@ pub async fn handle_import(
         // During docker build we can download it to /models/ggml-small.en.bin
         let model_path = Path::new("/models/ggml-small.en.bin");
         let fallback_model = Path::new("ggml-small.en.bin");
-
-        let actual_model_path = if model_path.exists() {
-            model_path
-        } else if fallback_model.exists() {
-            fallback_model
-        } else {
-            tracing::error!("Whisper model not found at either path");
-            set_error("Whisper model not found");
-            return;
-        };
-
-        let asr_chunks = match transcribe_audio(&wav_path, actual_model_path) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!("Transcription failed for {}: {}", book_id_clone, e);
-                set_error("Transcription failed");
-                return;
-            }
-        };
 
         let epub_bytes = match std::fs::read(&epub_path) {
             Ok(b) => b,
@@ -220,7 +217,8 @@ pub async fn handle_import(
             }
         };
 
-        let opf_xml = match readalong_core::epub::read_zip_entry_as_string(&mut archive, &opf_path) {
+        let opf_xml = match readalong_core::epub::read_zip_entry_as_string(&mut archive, &opf_path)
+        {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("Failed to read opf xml: {}", e);
@@ -241,7 +239,10 @@ pub async fn handle_import(
         let mut title = None;
         let mut author = None;
         if let Ok(doc) = roxmltree::Document::parse(&opf_xml) {
-            if let Some(metadata) = doc.descendants().find(|n| n.tag_name().name() == "metadata") {
+            if let Some(metadata) = doc
+                .descendants()
+                .find(|n| n.tag_name().name() == "metadata")
+            {
                 for child in metadata.children() {
                     if child.tag_name().name() == "title" {
                         title = child.text().map(|s| s.to_string());
@@ -262,15 +263,20 @@ pub async fn handle_import(
 
         for item in spine {
             let full_path = readalong_core::epub::resolve_opf_relative(opf_dir, &item.href);
-            let html = match readalong_core::epub::read_zip_entry_as_string(&mut archive, &full_path) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("Failed to read chapter {}: {}", full_path, e);
-                    continue;
-                }
-            };
+            let html =
+                match readalong_core::epub::read_zip_entry_as_string(&mut archive, &full_path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!("Failed to read chapter {}: {}", full_path, e);
+                        continue;
+                    }
+                };
 
-            let mut blocks = readalong_core::content::parse_chapter_html(&html, title.as_deref(), author.as_deref());
+            let mut blocks = readalong_core::content::parse_chapter_html(
+                &html,
+                title.as_deref(),
+                author.as_deref(),
+            );
             for block in &mut blocks {
                 // Make the block ID globally unique by prefixing with the chapter ID
                 block.id = format!("{}_{}", item.id, block.id);
@@ -280,15 +286,121 @@ pub async fn handle_import(
 
         tracing::info!("Extracted {} paragraphs. Aligning...", all_paragraphs.len());
 
-        let sync_points = fuzzy_align(&all_paragraphs, &asr_chunks);
-        tracing::info!("Generated {} sync points", sync_points.len());
+        let actual_model_path = if model_path.exists() {
+            model_path
+        } else if fallback_model.exists() {
+            fallback_model
+        } else {
+            tracing::error!("Whisper model not found at either path");
+            set_error("Whisper model not found");
+            return;
+        };
+
+        let mut chunker = match AudioChunker::new(&wav_path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("Failed to initialize audio chunker: {}", e);
+                set_error("Audio processing failed");
+                return;
+            }
+        };
+
+        let ctx_params = whisper_rs::WhisperContextParameters::default();
+        let ctx = match whisper_rs::WhisperContext::new_with_params(
+            actual_model_path.to_str().unwrap(),
+            ctx_params,
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("Failed to load whisper model: {}", e);
+                set_error("Whisper model load failed");
+                return;
+            }
+        };
+
+        let mut state = match ctx.create_state() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to create state: {}", e);
+                set_error("Whisper state failed");
+                return;
+            }
+        };
+
+        let mut aligner = FuzzyAligner::new(all_paragraphs);
+        let mut total_time_sec = 0.0;
+
+        loop {
+            // Process 3 minutes of audio at a time
+            let chunk_res = match chunker.next_chunk(180) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!("Failed to read next audio chunk: {}", e);
+                    set_error("Audio read failed");
+                    break;
+                }
+            };
+
+            if let Some((audio_data, time_offset_sec)) = chunk_res {
+                tracing::info!("Processing chunk at offset {}", time_offset_sec);
+                let asr_chunks =
+                    match transcribe_audio_chunk(&audio_data, time_offset_sec, &mut state) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::error!("Transcription failed: {}", e);
+                            set_error("Transcription failed");
+                            break;
+                        }
+                    };
+
+                aligner.add_chunks(asr_chunks);
+                aligner.align_current_buffer();
+
+                let current_sync = aligner.get_sync_points();
+                total_time_sec = time_offset_sec + (audio_data.len() as f32 / 16000.0);
+
+                // Update DB with intermediate progress
+                let status_msg =
+                    format!("Processing (Aligned up to {:.1}m)", total_time_sec / 60.0);
+                {
+                    let db_lock = db.lock().unwrap();
+                    if let Err(e) = db_lock.insert_book(
+                        &book_id_clone,
+                        "Unknown Title",
+                        "Unknown Author",
+                        epub_path.to_str().unwrap(),
+                        audio_path.to_str().unwrap(),
+                        &status_msg,
+                    ) {
+                        tracing::error!("Failed to update partial book status: {}", e);
+                    }
+                    if let Err(e) = db_lock.save_sync_map(&book_id_clone, &current_sync) {
+                        tracing::error!("Failed to save partial sync map: {}", e);
+                    }
+                }
+            } else {
+                break; // End of audio
+            }
+        }
+
+        aligner.finish();
+        let final_sync = aligner.get_sync_points();
+
+        tracing::info!("Generated {} sync points", final_sync.len());
 
         let db_lock = db.lock().unwrap();
-        if let Err(e) = db_lock.insert_book(&book_id_clone, "Unknown Title", "Unknown Author", epub_path.to_str().unwrap(), audio_path.to_str().unwrap(), "Processed Book") {
+        if let Err(e) = db_lock.insert_book(
+            &book_id_clone,
+            "Unknown Title",
+            "Unknown Author",
+            epub_path.to_str().unwrap(),
+            audio_path.to_str().unwrap(),
+            "Processed Book",
+        ) {
             tracing::error!("Failed to update book status {}: {}", book_id_clone, e);
         }
 
-        if let Err(e) = db_lock.save_sync_map(&book_id_clone, &sync_points) {
+        if let Err(e) = db_lock.save_sync_map(&book_id_clone, &final_sync) {
             tracing::error!("Failed to save sync map for {}: {}", book_id_clone, e);
         }
 
@@ -301,5 +413,6 @@ pub async fn handle_import(
             book_id,
             message: "Upload successful, processing started".to_string(),
         }),
-    ).into_response()
+    )
+        .into_response()
 }

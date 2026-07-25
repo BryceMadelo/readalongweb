@@ -3,12 +3,13 @@ import { useParams, Link } from 'react-router-dom';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { PlaybackSync } from 'readalong-wasm';
 import { ArrowLeft, Settings2 } from 'lucide-react';
-import { getBookData, type BookMeta, type ContentBlock } from '../../storage/db';
+import { getBookData, type BookMeta, type ContentBlock, type SyncPoint } from '../../storage/db';
 import Player from '../../components/Player/Player';
-
+import { useAlignment } from '../../context/AlignmentContext';
 
 export default function Reader() {
   const { id } = useParams<{ id: string }>();
+  const { activeJob } = useAlignment();
   const [meta, setMeta] = useState<BookMeta | null>(null);
   const [paragraphs, setParagraphs] = useState<ContentBlock[]>([]);
   const [audioUrl, setAudioUrl] = useState<string>('');
@@ -108,13 +109,32 @@ export default function Reader() {
 
 
   // We need the raw sync points for Text -> Audio seek. Let's fetch them.
-  const [syncPoints, setSyncPoints] = useState<{paragraph_id: string, timestamp_ms: number}[]>([]);
+  const [syncPoints, setSyncPoints] = useState<SyncPoint[]>([]);
   
   useEffect(() => {
     if (id) {
       getBookData(id).then(data => setSyncPoints(data.syncMap));
     }
   }, [id]);
+
+  // Poll for updates if this book is actively processing
+  useEffect(() => {
+    if (id && activeJob?.bookId === id && activeJob.status === 'processing') {
+      const interval = setInterval(async () => {
+        const data = await getBookData(id);
+        if (data.syncMap && data.syncMap.length > 0) {
+          setSyncPoints(data.syncMap);
+          const engine = new PlaybackSync();
+          data.syncMap.forEach((point) => {
+            engine.add_sync_point(point.paragraph_id, point.timestamp_ms, point.confidence ?? undefined);
+          });
+          engine.build_engine();
+          syncEngineRef.current = engine;
+        }
+      }, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [id, activeJob]);
 
   const handleTextTap = (index: number) => {
     const paragraphId = paragraphIdMap.current.get(index);
@@ -137,6 +157,11 @@ export default function Reader() {
 
   return (
     <div style={{ paddingBottom: '160px' }}> {/* Space for player */}
+      {activeJob?.bookId === id && activeJob?.status === 'processing' && (
+        <div style={{ backgroundColor: 'var(--accent-primary)', color: 'white', padding: '0.5rem', textAlign: 'center', fontSize: '0.875rem' }}>
+          {activeJob?.progressMsg || 'Audio sync in progress...'}
+        </div>
+      )}
       <header className="app-header">
         <div className="container" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           <Link to="/" style={{ color: 'var(--text-secondary)', textDecoration: 'none', display: 'flex', alignItems: 'center' }}>

@@ -15,7 +15,11 @@ pub struct ASRTranscriptChunk {
 }
 
 pub fn extract_audio_to_wav(input_path: &Path, output_path: &Path) -> Result<(), String> {
-    tracing::info!("Extracting audio from {:?} to {:?}", input_path, output_path);
+    tracing::info!(
+        "Extracting audio from {:?} to {:?}",
+        input_path,
+        output_path
+    );
 
     // Using standard ffmpeg binary
     // -ar 16000: 16kHz
@@ -43,48 +47,92 @@ pub fn extract_audio_to_wav(input_path: &Path, output_path: &Path) -> Result<(),
     Ok(())
 }
 
-pub fn transcribe_audio(wav_path: &Path, model_path: &Path) -> Result<Vec<ASRTranscriptChunk>, String> {
-    tracing::info!("Transcribing {:?}", wav_path);
+pub struct AudioChunker {
+    reader: hound::WavReader<std::io::BufReader<std::fs::File>>,
+    sample_rate: u32,
+    samples_read: u64,
+    is_int_format: bool,
+}
 
-    // Read WAV file
-    let mut reader = hound::WavReader::open(wav_path).map_err(|e| e.to_string())?;
+impl AudioChunker {
+    pub fn new(wav_path: &Path) -> Result<Self, String> {
+        let reader = hound::WavReader::open(wav_path).map_err(|e| e.to_string())?;
+        let sample_rate = reader.spec().sample_rate;
+        let is_int_format = reader.spec().sample_format == hound::SampleFormat::Int;
 
-    // Whisper-rs requires 32-bit float audio data
-    let audio_data: Vec<f32> = if reader.spec().sample_format == hound::SampleFormat::Int {
-        reader
-            .samples::<i16>()
-            .map(|s| s.unwrap_or(0) as f32 / 32768.0)
-            .collect()
-    } else {
-        reader
-            .samples::<f32>()
-            .map(|s| s.unwrap_or(0.0))
-            .collect()
-    };
+        Ok(Self {
+            reader,
+            sample_rate,
+            samples_read: 0,
+            is_int_format,
+        })
+    }
 
-    tracing::info!("Audio data loaded: {} samples", audio_data.len());
+    pub fn next_chunk(&mut self, duration_sec: u32) -> Result<Option<(Vec<f32>, f32)>, String> {
+        let max_samples = (self.sample_rate * duration_sec) as usize;
+        let mut audio_data = Vec::with_capacity(max_samples);
 
-    let ctx_params = WhisperContextParameters::default();
-    let ctx = WhisperContext::new_with_params(model_path.to_str().unwrap(), ctx_params)
-        .map_err(|e| format!("Failed to load whisper model: {}", e))?;
+        if self.is_int_format {
+            let mut iter = self.reader.samples::<i16>();
+            while audio_data.len() < max_samples {
+                match iter.next() {
+                    Some(Ok(s)) => audio_data.push(s as f32 / 32768.0),
+                    Some(Err(e)) => return Err(e.to_string()),
+                    None => break,
+                }
+            }
+        } else {
+            let mut iter = self.reader.samples::<f32>();
+            while audio_data.len() < max_samples {
+                match iter.next() {
+                    Some(Ok(s)) => audio_data.push(s),
+                    Some(Err(e)) => return Err(e.to_string()),
+                    None => break,
+                }
+            }
+        }
 
-    let mut state = ctx.create_state().map_err(|e| format!("Failed to create state: {}", e))?;
+        if audio_data.is_empty() {
+            return Ok(None);
+        }
 
+        let time_offset_sec = self.samples_read as f32 / self.sample_rate as f32;
+        self.samples_read += audio_data.len() as u64;
+
+        Ok(Some((audio_data, time_offset_sec)))
+    }
+}
+
+pub fn transcribe_audio_chunk(
+    audio_data: &[f32],
+    time_offset_sec: f32,
+    state: &mut whisper_rs::WhisperState,
+) -> Result<Vec<ASRTranscriptChunk>, String> {
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     // Request word-level timestamps
     params.set_print_special(false);
     params.set_print_progress(false);
     params.set_print_realtime(false);
-    params.set_print_timestamps(true);
+    params.set_print_timestamps(false);
 
     // Enable token timestamps for word-level precision
     params.set_token_timestamps(true);
 
-    tracing::info!("Running whisper inference...");
-    state.full(params, &audio_data[..]).map_err(|e| format!("Failed to run whisper: {}", e))?;
+    // Whisper doesn't have offset_ms in params. Wait, we should just let whisper process
+    // from 0 and then offset the timestamps manually.
+    // Let me check if whisper_rs FullParams has offset. It does not have offset_ms usually, or it's just t0.
+    // Actually, offset_ms is used to *start* decoding at a certain point. We are chunking externally!
+    // So we just add time_offset_sec to start_sec and end_sec ourselves.
 
-    let num_segments = state.full_n_segments().map_err(|e| format!("Failed to get segments: {}", e))?;
-    tracing::info!("Transcription complete: {} segments", num_segments);
+    tracing::info!("Running whisper inference on chunk...");
+    state
+        .full(params, audio_data)
+        .map_err(|e| format!("Failed to run whisper: {}", e))?;
+
+    let num_segments = state
+        .full_n_segments()
+        .map_err(|e| format!("Failed to get segments: {}", e))?;
+    tracing::info!("Transcription chunk complete: {} segments", num_segments);
 
     let mut chunks = Vec::new();
 
@@ -93,9 +141,9 @@ pub fn transcribe_audio(wav_path: &Path, model_path: &Path) -> Result<Vec<ASRTra
         let t0 = state.full_get_segment_t0(i).map_err(|e| e.to_string())?;
         let t1 = state.full_get_segment_t1(i).map_err(|e| e.to_string())?;
 
-        // Whisper time is in 10ms units (centiseconds)
-        let start_sec = t0 as f32 / 100.0;
-        let end_sec = t1 as f32 / 100.0;
+        // Whisper time is in 10ms units (centiseconds), offset by time_offset_sec
+        let start_sec = time_offset_sec + (t0 as f32 / 100.0);
+        let end_sec = time_offset_sec + (t1 as f32 / 100.0);
 
         let num_tokens = state.full_n_tokens(i).unwrap_or(0);
         let mut words = Vec::new();
@@ -106,8 +154,8 @@ pub fn transcribe_audio(wav_path: &Path, model_path: &Path) -> Result<Vec<ASRTra
         for j in 0..num_tokens {
             if let Ok(token_data) = state.full_get_token_data(i, j) {
                 if let Ok(token_text) = state.full_get_token_text(i, j) {
-                    let token_t0 = token_data.t0 as f32 / 100.0;
-                    let token_t1 = token_data.t1 as f32 / 100.0;
+                    let token_t0 = time_offset_sec + (token_data.t0 as f32 / 100.0);
+                    let token_t1 = time_offset_sec + (token_data.t1 as f32 / 100.0);
 
                     // Strip whisper special tags (e.g., [_TT_1416], [_BEG_])
                     // which happen when token timestamps are enabled.
