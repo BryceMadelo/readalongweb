@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
 import { updateSyncMap } from '../storage/db';
 
+
 interface AlignmentJob {
   bookId: string;
   bookTitle: string;
@@ -39,31 +40,46 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const pollInterval = setInterval(async () => {
+    let isSubscribed = true;
+
+    const poll = async () => {
       try {
         const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
         const statusRes = await fetch(`${API_URL}/status/${activeJob.bookId}`);
         if (statusRes.ok) {
           const data = await statusRes.json();
+
           if (data.status === 'Processed Book') {
-            if (data.sync_map) {
+            if (data.sync_map && isSubscribed) {
               await updateSyncMap(activeJob.bookId, data.sync_map);
               completeJob();
-            } else {
+            } else if (isSubscribed) {
               failJob("Alignment finished but no sync map was returned.");
             }
           } else if (data.status.startsWith('Error')) {
-            failJob(data.status);
+            if (isSubscribed) failJob(data.status);
           } else {
-            updateJob(data.status);
+             // It is processing.
+             if (data.sync_map && data.sync_map.length > 0 && isSubscribed) {
+                 await updateSyncMap(activeJob.bookId, data.sync_map);
+             }
+             if (isSubscribed) {
+                updateJob(data.status);
+             }
           }
         }
       } catch (e) {
         console.error("Polling error:", e);
       }
-    }, 3000);
+    };
 
-    return () => clearInterval(pollInterval);
+    poll(); // initial check immediately
+    const pollInterval = setInterval(poll, 3000);
+
+    return () => {
+       isSubscribed = false;
+       clearInterval(pollInterval);
+    };
   }, [activeJob?.bookId, activeJob?.status]);
 
   return (

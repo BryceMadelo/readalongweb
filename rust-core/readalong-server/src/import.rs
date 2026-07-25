@@ -1,25 +1,22 @@
 use axum::{
-    extract::{Multipart, State},
+    extract::{Multipart, Path as AxumPath, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
-
-use crate::db::LibraryDb;
-use crate::transcribe::{extract_audio_to_wav, transcribe_audio};
 use crate::align::fuzzy_align;
+use crate::db::LibraryDb;
+use crate::transcribe::{extract_audio_to_wav, Transcriber, load_audio_data};
 
 #[derive(Serialize)]
 pub struct ImportResponse {
     pub book_id: String,
     pub message: String,
 }
-
-use axum::extract::Path as AxumPath;
 
 #[derive(Serialize)]
 pub struct StatusResponse {
@@ -37,11 +34,8 @@ pub async fn handle_status(
         Err(_) => return (StatusCode::NOT_FOUND, "Book not found").into_response(),
     };
 
-    let sync_map = if status == "Processed Book" {
-        db_lock.get_sync_map(&book_id).ok()
-    } else {
-        None
-    };
+    // Always fetch sync map if it exists, even if partially complete.
+    let sync_map = db_lock.get_sync_map(&book_id).ok();
 
     (
         StatusCode::OK,
@@ -183,15 +177,6 @@ pub async fn handle_import(
             return;
         };
 
-        let asr_chunks = match transcribe_audio(&wav_path, actual_model_path) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!("Transcription failed for {}: {}", book_id_clone, e);
-                set_error("Transcription failed");
-                return;
-            }
-        };
-
         let epub_bytes = match std::fs::read(&epub_path) {
             Ok(b) => b,
             Err(e) => {
@@ -280,11 +265,67 @@ pub async fn handle_import(
 
         tracing::info!("Extracted {} paragraphs. Aligning...", all_paragraphs.len());
 
-        let sync_points = fuzzy_align(&all_paragraphs, &asr_chunks);
+        let audio_data = match load_audio_data(&wav_path) {
+            Ok(data) => data,
+            Err(e) => {
+                tracing::error!("Failed to load audio data for {}: {}", book_id_clone, e);
+                set_error("Failed to load audio");
+                return;
+            }
+        };
+
+        let transcriber = match Transcriber::new(actual_model_path) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("Failed to initialize Whisper model for {}: {}", book_id_clone, e);
+                set_error("Whisper model initialization failed");
+                return;
+            }
+        };
+
+        let mut asr_chunks = Vec::new();
+        let chunk_size_samples = 180 * 16000;
+        let mut accumulated_sync_points = Vec::new();
+
+        for i in (0..audio_data.len()).step_by(chunk_size_samples) {
+            let end_idx = std::cmp::min(i + chunk_size_samples, audio_data.len());
+            let chunk_data = &audio_data[i..end_idx];
+            let offset_seconds = (i as f32) / 16000.0;
+
+            tracing::info!("Processing chunk at offset {}", offset_seconds);
+            match transcriber.transcribe_chunk(chunk_data, offset_seconds) {
+                Ok(mut chunks) => {
+                    asr_chunks.append(&mut chunks);
+                },
+                Err(e) => {
+                    tracing::error!("Transcription failed at offset {} for {}: {}", offset_seconds, book_id_clone, e);
+                    set_error("Transcription failed");
+                    return;
+                }
+            }
+
+            let sync_points = fuzzy_align(&all_paragraphs, &asr_chunks);
+            accumulated_sync_points = sync_points.clone();
+
+            {
+                let db_lock = db.lock().unwrap();
+                if let Err(e) = db_lock.save_sync_map(&book_id_clone, &sync_points) {
+                    tracing::error!("Failed to save sync map incrementally for {}: {}", book_id_clone, e);
+                }
+
+                let minutes_processed = (offset_seconds + 180.0) / 60.0;
+                let status_msg = format!("Processing (Aligned up to {:.1}m)", minutes_processed);
+                if let Err(e) = db_lock.insert_book(&book_id_clone, title.as_deref().unwrap_or("Unknown Title"), author.as_deref().unwrap_or("Unknown Author"), epub_path.to_str().unwrap(), audio_path.to_str().unwrap(), &status_msg) {
+                     tracing::error!("Failed to update book status {}: {}", book_id_clone, e);
+                }
+            }
+        }
+
+        let sync_points = accumulated_sync_points;
         tracing::info!("Generated {} sync points", sync_points.len());
 
         let db_lock = db.lock().unwrap();
-        if let Err(e) = db_lock.insert_book(&book_id_clone, "Unknown Title", "Unknown Author", epub_path.to_str().unwrap(), audio_path.to_str().unwrap(), "Processed Book") {
+        if let Err(e) = db_lock.insert_book(&book_id_clone, title.as_deref().unwrap_or("Unknown Title"), author.as_deref().unwrap_or("Unknown Author"), epub_path.to_str().unwrap(), audio_path.to_str().unwrap(), "Processed Book") {
             tracing::error!("Failed to update book status {}: {}", book_id_clone, e);
         }
 
