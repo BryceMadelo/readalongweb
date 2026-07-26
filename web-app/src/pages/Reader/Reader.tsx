@@ -1,8 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { PlaybackSync } from 'readalong-wasm';
-import { Settings2, Menu, Clock } from 'lucide-react';
+import { Settings2, Menu } from 'lucide-react';
 import { getBookData, updateBookProgress, type BookMeta, type ContentBlock, type SyncPoint } from '../../storage/db';
 import Player from '../../components/Player/Player';
 import { useAlignment } from '../../context/AlignmentContext';
@@ -191,6 +191,20 @@ export default function Reader() {
     setShowTOC(false); // Auto close TOC on select
   };
 
+  const currentChapterText = useMemo(() => {
+    if (activeParagraphIndex === null) return '';
+    const headings = paragraphs
+      .map((block, index) => ({ ...block, index }))
+      .filter(block => block.tag.startsWith('h'));
+    
+    for (let i = headings.length - 1; i >= 0; i--) {
+      if (headings[i].index <= activeParagraphIndex) {
+        return headings[i].text;
+      }
+    }
+    return '';
+  }, [paragraphs, activeParagraphIndex]);
+
   if (isLoading) return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>Loading...</div>;
   if (!meta) return <div>Book not found.</div>;
 
@@ -199,10 +213,6 @@ export default function Reader() {
   const tMin = activeJob?.totalMin || 0;
   const pDisplay = Math.floor(pMin);
   const tDisplay = Math.floor(tMin);
-
-  useEffect(() => {
-    localStorage.setItem('reader-settings', JSON.stringify(settings));
-  }, [settings]);
 
   const getReaderStyles = (): React.CSSProperties => {
     return {
@@ -248,16 +258,16 @@ export default function Reader() {
             <div style={{ width: '1px', height: '24px', background: 'var(--border-color)', margin: '0 0.5rem' }} />
             <div style={{ display: 'flex', alignItems: 'center', fontSize: '0.9rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '300px' }}>
               <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{meta.title}</span>
-              <span style={{ margin: '0 0.5rem' }}>/</span>
-              Chapter X
+              {currentChapterText && (
+                <>
+                  <span style={{ margin: '0 0.5rem' }}>/</span>
+                  {currentChapterText}
+                </>
+              )}
             </div>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-              <Clock size={16} /> 12 min left
-            </div>
-
             <TTSControls
               text={paragraphs[activeParagraphIndex ?? 0]?.text || ''}
               onBoundary={(charIndex, length) => setTtsWordRange({ start: charIndex, length })}

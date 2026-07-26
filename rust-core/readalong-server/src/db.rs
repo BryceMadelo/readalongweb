@@ -11,7 +11,16 @@ impl LibraryDb {
         let conn = Connection::open(path)?;
         let db = Self { conn };
         db.init_schema()?;
+        db.cleanup_orphaned_jobs()?;
         Ok(db)
+    }
+
+    fn cleanup_orphaned_jobs(&self) -> Result<()> {
+        self.conn.execute(
+            "UPDATE books SET status = 'Error: Server restarted during alignment' WHERE status LIKE 'Processing%' OR status = 'Paused'",
+            [],
+        )?;
+        Ok(())
     }
 
     fn init_schema(&self) -> Result<()> {
