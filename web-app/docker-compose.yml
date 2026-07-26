@@ -11,6 +11,13 @@ services:
     volumes:
       - readalong_data:/app/data
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
 volumes:
   readalong_data:

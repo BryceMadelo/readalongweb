@@ -6,12 +6,11 @@ use axum::{
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 use crate::align::FuzzyAligner;
-use crate::db::LibraryDb;
 use crate::transcribe::{AudioChunker, extract_audio_to_wav, transcribe_audio_chunk};
+use crate::AppState;
 
 #[derive(Serialize)]
 pub struct ImportResponse {
@@ -28,10 +27,10 @@ pub struct StatusResponse {
 }
 
 pub async fn handle_status(
-    State(db): State<Arc<Mutex<LibraryDb>>>,
+    State(app_state): State<AppState>,
     AxumPath(book_id): AxumPath<String>,
 ) -> impl IntoResponse {
-    let db_lock = db.lock().unwrap();
+    let db_lock = app_state.db.lock().unwrap();
     let status = match db_lock.get_book_status(&book_id) {
         Ok(s) => s,
         Err(_) => return (StatusCode::NOT_FOUND, "Book not found").into_response(),
@@ -44,11 +43,11 @@ pub async fn handle_status(
 }
 
 pub async fn handle_update_sync_map(
-    State(db): State<Arc<Mutex<LibraryDb>>>,
+    State(app_state): State<AppState>,
     AxumPath(book_id): AxumPath<String>,
     Json(sync_points): Json<Vec<readalong_core::sync::SyncPoint>>,
 ) -> impl IntoResponse {
-    let db_lock = db.lock().unwrap();
+    let db_lock = app_state.db.lock().unwrap();
     if let Err(e) = db_lock.save_sync_map(&book_id, &sync_points) {
         tracing::error!("Failed to save sync map for {}: {}", book_id, e);
         return (
@@ -62,10 +61,13 @@ pub async fn handle_update_sync_map(
 }
 
 pub async fn handle_pause(
-    State(db): State<Arc<Mutex<LibraryDb>>>,
+    State(app_state): State<AppState>,
     AxumPath(book_id): AxumPath<String>,
 ) -> impl IntoResponse {
-    let db_lock = db.lock().unwrap();
+    // If it was in the queue waiting, remove it
+    app_state.queue.remove_job(&book_id);
+
+    let db_lock = app_state.db.lock().unwrap();
     if let Err(e) = db_lock.update_book_status(&book_id, "Paused") {
         tracing::error!("Failed to pause book {}: {}", book_id, e);
         return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
@@ -74,10 +76,10 @@ pub async fn handle_pause(
 }
 
 pub async fn handle_resume(
-    State(db): State<Arc<Mutex<LibraryDb>>>,
+    State(app_state): State<AppState>,
     AxumPath(book_id): AxumPath<String>,
 ) -> impl IntoResponse {
-    let db_lock = db.lock().unwrap();
+    let db_lock = app_state.db.lock().unwrap();
     // Assuming when we resume, the status goes back to Processing.
     // The exact progress will be overwritten by the loop shortly.
     if let Err(e) = db_lock.update_book_status(&book_id, "Processing...") {
@@ -94,11 +96,11 @@ pub struct EditBookRequest {
 }
 
 pub async fn handle_edit(
-    State(db): State<Arc<Mutex<LibraryDb>>>,
+    State(app_state): State<AppState>,
     AxumPath(book_id): AxumPath<String>,
     Json(payload): Json<EditBookRequest>,
 ) -> impl IntoResponse {
-    let db_lock = db.lock().unwrap();
+    let db_lock = app_state.db.lock().unwrap();
     if let Err(e) = db_lock.update_book_meta(&book_id, &payload.title, &payload.author) {
         tracing::error!("Failed to edit book {}: {}", book_id, e);
         return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
@@ -107,7 +109,7 @@ pub async fn handle_edit(
 }
 
 pub async fn handle_import(
-    State(db): State<Arc<Mutex<LibraryDb>>>,
+    State(app_state): State<AppState>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     let book_id = Uuid::new_v4().to_string();
@@ -181,7 +183,7 @@ pub async fn handle_import(
     if audio_path.is_none() {
         let book_id_clone = book_id.clone();
         tokio::task::spawn_blocking(move || {
-            let db_lock = db.lock().unwrap();
+            let db_lock = app_state.db.lock().unwrap();
             if let Err(e) = db_lock.insert_book(
                 &book_id_clone,
                 "Unknown Title",
@@ -212,7 +214,7 @@ pub async fn handle_import(
 
         // Update database status: Processing (in a real app, we'd have a status column)
         {
-            let db_lock = db.lock().unwrap();
+            let db_lock = app_state.db.lock().unwrap();
             if let Err(e) = db_lock.insert_book(
                 &book_id_clone,
                 "Unknown Title",
@@ -231,7 +233,7 @@ pub async fn handle_import(
 
         // Helper to mark failure
         let set_error = |err_msg: &str| {
-            let db_lock = db.lock().unwrap();
+            let db_lock = app_state.db.lock().unwrap();
             if let Err(e) = db_lock.insert_book(
                 &book_id_clone,
                 "Unknown Title",
@@ -405,7 +407,7 @@ pub async fn handle_import(
             // Check for pause status
             {
                 let mut is_paused = false;
-                if let Ok(db_lock) = db.lock() {
+                if let Ok(db_lock) = app_state.db.lock() {
                     if let Ok(status) = db_lock.get_book_status(&book_id_clone) {
                         if status == "Paused" {
                             is_paused = true;
@@ -456,7 +458,7 @@ pub async fn handle_import(
                 let status_msg = format!("Processing|{}|{}", current_min, total_min);
                 
                 {
-                    let db_lock = db.lock().unwrap();
+                    let db_lock = app_state.db.lock().unwrap();
                     if let Err(e) = db_lock.update_book_status(
                         &book_id_clone,
                         &status_msg,
@@ -485,7 +487,7 @@ pub async fn handle_import(
 
         tracing::info!("Generated {} sync points", final_sync.len());
 
-        let db_lock = db.lock().unwrap();
+        let db_lock = app_state.db.lock().unwrap();
         if let Err(e) = db_lock.insert_book(
             &book_id_clone,
             "Unknown Title",
@@ -516,7 +518,7 @@ pub async fn handle_import(
 
 /// POST /add_audio/:book_id — attach (or replace) an audio track and re-run alignment
 pub async fn handle_add_audio(
-    State(db): State<Arc<Mutex<LibraryDb>>>,
+    State(app_state): State<AppState>,
     AxumPath(book_id): AxumPath<String>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
@@ -577,7 +579,7 @@ pub async fn handle_add_audio(
 
     // Retrieve the existing epub path from the DB
     let epub_path_str = {
-        let db_lock = db.lock().unwrap();
+        let db_lock = app_state.db.lock().unwrap();
         match db_lock.get_book_paths(&book_id) {
             Ok((epub, _)) => epub,
             Err(_) => return (StatusCode::NOT_FOUND, "Book not found").into_response(),
@@ -596,7 +598,7 @@ pub async fn handle_add_audio(
         tracing::info!("Re-aligning book {} with new audio", book_id_clone);
 
         {
-            let db_lock = db.lock().unwrap();
+            let db_lock = app_state.db.lock().unwrap();
             if let Err(e) = db_lock.insert_book(
                 &book_id_clone,
                 "Unknown Title",
@@ -610,7 +612,7 @@ pub async fn handle_add_audio(
         }
 
         let set_error = |err_msg: &str| {
-            let db_lock = db.lock().unwrap();
+            let db_lock = app_state.db.lock().unwrap();
             let _ = db_lock.update_book_status(&book_id_clone, &format!("Error: {}", err_msg));
         };
 
@@ -702,7 +704,7 @@ pub async fn handle_add_audio(
         loop {
             {
                 let mut is_paused = false;
-                if let Ok(db_lock) = db.lock() {
+                if let Ok(db_lock) = app_state.db.lock() {
                     if let Ok(status) = db_lock.get_book_status(&book_id_clone) {
                         if status == "Paused" { is_paused = true; }
                     }
@@ -731,7 +733,7 @@ pub async fn handle_add_audio(
                 let status_msg = format!("Processing|{}|{}", current_min, total_min);
 
                 {
-                    let db_lock = db.lock().unwrap();
+                    let db_lock = app_state.db.lock().unwrap();
                     let _ = db_lock.update_book_status(&book_id_clone, &status_msg);
                     let _ = db_lock.save_sync_map(&book_id_clone, &current_sync);
                 }
@@ -746,7 +748,7 @@ pub async fn handle_add_audio(
         aligner.finish();
         let final_sync = aligner.get_sync_points();
 
-        let db_lock = db.lock().unwrap();
+        let db_lock = app_state.db.lock().unwrap();
         let _ = db_lock.insert_book(
             &book_id_clone,
             "Unknown Title",

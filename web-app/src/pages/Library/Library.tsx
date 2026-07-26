@@ -4,6 +4,7 @@ import { BookOpen, Plus, Search, Library as LibraryIcon, Compass, Clock, X } fro
 import { getBooks, deleteBook, type BookMeta } from '../../storage/db';
 import { BookCard } from './BookCard';
 import { useAlignment } from '../../context/AlignmentContext';
+import { fetchWithAuth } from '../../utils/api';
 
 export default function Library() {
   const { activeJob } = useAlignment();
@@ -22,7 +23,26 @@ export default function Library() {
     async function loadBooks() {
       try {
         const loadedBooks = await getBooks();
-        setBooks(loadedBooks.sort((a, b) => b.dateAdded - a.dateAdded));
+        const sortedBooks = loadedBooks.sort((a, b) => b.dateAdded - a.dateAdded);
+
+        // Fetch remote progress for each book
+        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+        const booksWithRemoteProgress = await Promise.all(sortedBooks.map(async (book) => {
+          try {
+            const res = await fetchWithAuth(`${API_URL}/progress/${book.id}`);
+            if (res.ok) {
+              const progressData = await res.json();
+              if (progressData.progress_ms != null && progressData.progress_ms > 0) {
+                return { ...book, progress: progressData.progress_ms };
+              }
+            }
+          } catch (e) {
+            console.error("Failed to fetch remote progress for book", book.id, e);
+          }
+          return book;
+        }));
+
+        setBooks(booksWithRemoteProgress);
       } catch (e) {
         console.error("Failed to load books:", e);
       } finally {

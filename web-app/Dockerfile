@@ -1,4 +1,6 @@
-FROM rust:1.88-slim as builder
+FROM nvidia/cuda:12.2.2-devel-ubuntu22.04 as builder
+
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -9,21 +11,26 @@ RUN apt-get update && apt-get install -y \
     clang \
     wget \
     ffmpeg \
+    curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 WORKDIR /app
 
 # Copy the entire workspace (context root IS rust-core/ now)
 COPY . .
 
-# Build the server crate
-RUN cargo build --release --bin readalong-server --manifest-path Cargo.toml
+# Build the server crate with CUDA feature enabled
+RUN cargo build --release --bin readalong-server --manifest-path Cargo.toml --features cuda
 
 # Download the whisper model during build to embed it in the image
 RUN mkdir -p /models && \
     wget https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin -O /models/ggml-small.en.bin
 
-FROM debian:bookworm-slim
+FROM nvidia/cuda:12.2.2-runtime-ubuntu22.04
 
 # Install runtime dependencies (ffmpeg, openssl, etc)
 RUN apt-get update && apt-get install -y \

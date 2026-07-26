@@ -1,11 +1,12 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { updateSyncMap } from '../storage/db';
+import { fetchWithAuth } from '../utils/api';
 
 export interface AlignmentJob {
   bookId: string;
   bookTitle: string;
   progressMsg: string;
-  status: 'uploading' | 'processing' | 'paused' | 'complete' | 'error';
+  status: 'uploading' | 'processing' | 'paused' | 'complete' | 'error' | 'queued';
   progressMin?: number;
   totalMin?: number;
 }
@@ -76,7 +77,7 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
     progressMsg: string,
     progressMin?: number,
     totalMin?: number,
-    status?: 'processing' | 'paused'
+    status?: 'processing' | 'paused' | 'queued'
   ) => {
     setJobs((prev) => {
       const existing = prev[bookId];
@@ -103,7 +104,7 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
   const pauseJob = async (bookId: string) => {
     try {
       const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-      await fetch(`${API_URL}/pause/${bookId}`, { method: 'POST' });
+      await fetchWithAuth(`${API_URL}/pause/${bookId}`, { method: 'POST' });
       setJobs((prev) =>
         prev[bookId] ? { ...prev, [bookId]: { ...prev[bookId], status: 'paused' } } : prev
       );
@@ -115,7 +116,7 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
   const resumeJob = async (bookId: string) => {
     try {
       const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-      await fetch(`${API_URL}/resume/${bookId}`, { method: 'POST' });
+      await fetchWithAuth(`${API_URL}/resume/${bookId}`, { method: 'POST' });
       setJobs((prev) =>
         prev[bookId] ? { ...prev, [bookId]: { ...prev[bookId], status: 'processing' } } : prev
       );
@@ -157,19 +158,19 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
 
   // Polling loop — polls ALL currently-processing jobs
   useEffect(() => {
-    const processingBookIds = Object.values(jobs)
-      .filter((j) => j.status === 'processing')
+    const activeBookIds = Object.values(jobs)
+      .filter((j) => j.status === 'processing' || j.status === 'queued')
       .map((j) => j.bookId);
 
-    if (processingBookIds.length === 0) return;
+    if (activeBookIds.length === 0) return;
 
     const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
     const pollInterval = setInterval(async () => {
       await Promise.all(
-        processingBookIds.map(async (bookId) => {
+        activeBookIds.map(async (bookId) => {
           try {
-            const statusRes = await fetch(`${API_URL}/status/${bookId}`);
+            const statusRes = await fetchWithAuth(`${API_URL}/status/${bookId}`);
             if (statusRes.ok) {
               const data = await statusRes.json();
 
@@ -194,6 +195,8 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
                 updateJob(bookId, `Processing (${pDisplay}m / ${tDisplay}m)`, pMin, tMin, 'processing');
               } else if (data.status === 'Paused') {
                 updateJob(bookId, 'Paused', undefined, undefined, 'paused');
+              } else if (data.status.startsWith('Queued')) {
+                updateJob(bookId, data.status, undefined, undefined, 'queued');
               } else {
                 updateJob(bookId, data.status);
               }
@@ -209,7 +212,7 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
 
     return () => clearInterval(pollInterval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(Object.values(jobs).filter(j => j.status === 'processing').map(j => j.bookId))]);
+  }, [JSON.stringify(Object.values(jobs).filter(j => j.status === 'processing' || j.status === 'queued').map(j => j.bookId))]);
 
   return (
     <AlignmentContext.Provider

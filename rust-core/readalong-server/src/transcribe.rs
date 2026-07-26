@@ -1,6 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_rs::{FullParams, SamplingStrategy};
 
 pub struct ASRTranscriptWord {
     pub word: String,

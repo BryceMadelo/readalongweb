@@ -73,3 +73,26 @@ export default defineConfig([
 ])
 
 ```
+
+## GPU Acceleration for Transcription (Optional)
+
+ReadAlong supports optional GPU acceleration using NVIDIA CUDA for faster audio transcription during the import process.
+
+### Prerequisites
+
+To use GPU acceleration, you must have the following installed on your host machine:
+
+1.  **NVIDIA GPU:** A compatible NVIDIA graphics card (e.g., RTX series).
+2.  **NVIDIA Drivers:** Ensure your host has the correct NVIDIA drivers installed.
+3.  **NVIDIA Container Toolkit:** You *must* install the NVIDIA Container Toolkit to allow Docker to access the host's GPU.
+    *   Installation instructions: [NVIDIA Container Toolkit Documentation](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+    *   Note: Plain Docker Desktop on Windows/Mac may require additional WSL2 configuration.
+
+### How it Works
+
+The provided `docker-compose.yml` file is already configured to request GPU access via the `deploy.resources.reservations.devices` directive.
+
+When you run `docker-compose up`:
+
+*   **If a compatible GPU and the Toolkit are found:** The container will utilize the GPU, significantly speeding up the whisper.cpp transcription phase.
+*   **If no GPU/Toolkit is found (CPU Fallback):** Whisper.cpp is designed to gracefully fall back to CPU execution. The server will still run and transcribe audio, albeit slower. Self-hosting is not broken for users without NVIDIA hardware.
