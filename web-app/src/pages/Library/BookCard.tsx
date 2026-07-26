@@ -69,8 +69,24 @@ export function BookCard({ book, onDelete, onUpdate }: BookCardProps) {
           )}
         </div>
         
+        {/* Edit Button overlay on Top Right */}
+        {!isEditing && (
+          <button
+            onClick={(e) => { e.preventDefault(); setIsEditing(true); }}
+            style={{
+              position: 'absolute', top: '10px', right: isAligningThis ? '10px' : '85px',
+              background: 'var(--glass-bg)', backdropFilter: 'blur(4px)',
+              border: '1px solid var(--border-color)', borderRadius: '50%',
+              width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'var(--text-primary)', cursor: 'pointer', zIndex: 5
+            }}
+          >
+            <Edit2 size={16} />
+          </button>
+        )}
+
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div style={{ flex: 1, marginRight: '1rem' }}>
+          <div style={{ flex: 1 }}>
             {isEditing ? (
               <div onClick={e => e.preventDefault()}>
                 <input 
@@ -90,21 +106,13 @@ export function BookCard({ book, onDelete, onUpdate }: BookCardProps) {
               </div>
             ) : (
               <>
-                <h3 style={{ fontSize: '1.25rem', marginBottom: '0.25rem', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                <h3 style={{ fontSize: '1.1rem', marginBottom: '0.25rem', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
                   {book.title}
                 </h3>
-                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', margin: 0 }}>{book.author}</p>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', margin: 0 }}>{book.author}</p>
               </>
             )}
           </div>
-          {!isEditing && (
-            <button 
-              onClick={(e) => { e.preventDefault(); setIsEditing(true); }}
-              style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}
-            >
-              <Edit2 size={16} />
-            </button>
-          )}
         </div>
 
         {/* Alignment Progress Block */}

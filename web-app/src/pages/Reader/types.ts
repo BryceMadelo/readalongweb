@@ -5,6 +5,7 @@ export interface ReaderSettingsState {
   textHeight: 'small' | 'medium' | 'large';
   alignment: 'left' | 'center' | 'justify';
   pageMargins: 'narrow' | 'medium' | 'wide';
+  guideColor: string;
 }
 
 export const defaultSettings: ReaderSettingsState = {
@@ -14,4 +15,5 @@ export const defaultSettings: ReaderSettingsState = {
   textHeight: 'medium',
   alignment: 'left',
   pageMargins: 'medium',
+  guideColor: '#fef08a', // Default yellow
 };
