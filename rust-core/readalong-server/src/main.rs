@@ -37,6 +37,7 @@ async fn main() {
     let app = Router::new()
         .route("/", get(|| async { "ReadAlong Server is running" }))
         .route("/import", post(import::handle_import))
+        .route("/add_audio/:book_id", post(import::handle_add_audio))
         .route("/status/:book_id", get(import::handle_status))
         .route("/sync_map/:book_id", post(import::handle_update_sync_map))
         .route("/pause/:book_id", post(import::handle_pause))

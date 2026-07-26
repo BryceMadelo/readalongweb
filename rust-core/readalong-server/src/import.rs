@@ -177,11 +177,33 @@ pub async fn handle_import(
         None => return (StatusCode::BAD_REQUEST, "Missing epub file").into_response(),
     };
 
-    let audio_path = match audio_path {
-        Some(p) => p,
-        None => return (StatusCode::BAD_REQUEST, "Missing audio file").into_response(),
-    };
+    // Audio is optional — if not provided, save the book as "Ready" and skip alignment
+    if audio_path.is_none() {
+        let book_id_clone = book_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let db_lock = db.lock().unwrap();
+            if let Err(e) = db_lock.insert_book(
+                &book_id_clone,
+                "Unknown Title",
+                "Unknown Author",
+                epub_path.to_str().unwrap(),
+                "",
+                "Ready",
+            ) {
+                tracing::error!("Failed to insert epub-only book {}: {}", book_id_clone, e);
+            }
+        });
+        return (
+            StatusCode::ACCEPTED,
+            Json(ImportResponse {
+                book_id,
+                message: "Upload successful, no audio provided".to_string(),
+            }),
+        )
+            .into_response();
+    }
 
+    let audio_path = audio_path.unwrap();
     let book_id_clone = book_id.clone();
 
     // Fire and forget the processing task using spawn_blocking to prevent async starvation
@@ -487,6 +509,261 @@ pub async fn handle_import(
         Json(ImportResponse {
             book_id,
             message: "Upload successful, processing started".to_string(),
+        }),
+    )
+        .into_response()
+}
+
+/// POST /add_audio/:book_id — attach (or replace) an audio track and re-run alignment
+pub async fn handle_add_audio(
+    State(db): State<Arc<Mutex<LibraryDb>>>,
+    AxumPath(book_id): AxumPath<String>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let data_dir_str = std::env::var("DATA_DIR").unwrap_or_else(|_| ".".to_string());
+    let tmp_dir = PathBuf::from(&data_dir_str)
+        .join("tmp_uploads")
+        .join(&book_id);
+
+    if let Err(e) = tokio::fs::create_dir_all(&tmp_dir).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to create directory: {}", e),
+        )
+            .into_response();
+    }
+
+    // Receive the audio file
+    let mut audio_path: Option<PathBuf> = None;
+    while let Ok(Some(mut field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        let file_name = field.file_name().unwrap_or("unknown").to_string();
+        let is_audio = name == "audio"
+            || file_name.ends_with(".mp3")
+            || file_name.ends_with(".m4b")
+            || file_name.ends_with(".m4a");
+
+        if !is_audio {
+            continue;
+        }
+
+        let path = tmp_dir.join("upload.audio");
+        let mut file = match tokio::fs::File::create(&path).await {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::error!("Failed to create audio file: {}", e);
+                continue;
+            }
+        };
+
+        use tokio::io::AsyncWriteExt;
+        let mut success = true;
+        while let Ok(Some(chunk)) = field.chunk().await {
+            if let Err(e) = file.write_all(&chunk).await {
+                tracing::error!("Failed to write chunk: {}", e);
+                success = false;
+                break;
+            }
+        }
+        if success {
+            audio_path = Some(path);
+        }
+    }
+
+    let audio_path = match audio_path {
+        Some(p) => p,
+        None => return (StatusCode::BAD_REQUEST, "Missing audio file").into_response(),
+    };
+
+    // Retrieve the existing epub path from the DB
+    let epub_path_str = {
+        let db_lock = db.lock().unwrap();
+        match db_lock.get_book_paths(&book_id) {
+            Ok((epub, _)) => epub,
+            Err(_) => return (StatusCode::NOT_FOUND, "Book not found").into_response(),
+        }
+    };
+    let epub_path = PathBuf::from(&epub_path_str);
+    if !epub_path.exists() {
+        return (StatusCode::NOT_FOUND, "EPUB file not found on server").into_response();
+    }
+
+    let book_id_clone = book_id.clone();
+    let tmp_dir_clone = tmp_dir.clone();
+
+    // Kick off alignment (same pipeline as handle_import)
+    tokio::task::spawn_blocking(move || {
+        tracing::info!("Re-aligning book {} with new audio", book_id_clone);
+
+        {
+            let db_lock = db.lock().unwrap();
+            if let Err(e) = db_lock.insert_book(
+                &book_id_clone,
+                "Unknown Title",
+                "Unknown Author",
+                epub_path.to_str().unwrap(),
+                audio_path.to_str().unwrap(),
+                "Processing...",
+            ) {
+                tracing::error!("Failed to update book state for re-align {}: {}", book_id_clone, e);
+            }
+        }
+
+        let set_error = |err_msg: &str| {
+            let db_lock = db.lock().unwrap();
+            let _ = db_lock.update_book_status(&book_id_clone, &format!("Error: {}", err_msg));
+        };
+
+        let wav_path = tmp_dir_clone.join("extracted.wav");
+        if let Err(e) = extract_audio_to_wav(&audio_path, &wav_path) {
+            tracing::error!("Audio extraction failed for {}: {}", book_id_clone, e);
+            set_error("Audio extraction failed");
+            return;
+        }
+
+        let model_path = Path::new("/models/ggml-small.en.bin");
+        let fallback_model = Path::new("ggml-small.en.bin");
+
+        let epub_bytes = match std::fs::read(&epub_path) {
+            Ok(b) => b,
+            Err(e) => { tracing::error!("Failed to read epub: {}", e); set_error("Failed to read EPUB"); return; }
+        };
+
+        let mut archive = match zip::ZipArchive::new(std::io::Cursor::new(&epub_bytes)) {
+            Ok(a) => a,
+            Err(e) => { tracing::error!("Failed to open epub as zip: {}", e); set_error("Failed to parse EPUB"); return; }
+        };
+
+        let opf_path = match readalong_core::epub::find_opf_path(&mut archive) {
+            Ok(p) => p,
+            Err(e) => { tracing::error!("Failed to find opf: {}", e); set_error("Invalid EPUB format"); return; }
+        };
+
+        let opf_xml = match readalong_core::epub::read_zip_entry_as_string(&mut archive, &opf_path) {
+            Ok(s) => s,
+            Err(e) => { tracing::error!("Failed to read opf xml: {}", e); set_error("Invalid EPUB format"); return; }
+        };
+
+        let spine = match readalong_core::epub::parse_opf_spine(&opf_xml) {
+            Ok(s) => s,
+            Err(e) => { tracing::error!("Failed to parse spine: {}", e); set_error("Invalid EPUB format"); return; }
+        };
+
+        let mut title = None;
+        let mut author = None;
+        if let Ok(doc) = roxmltree::Document::parse(&opf_xml) {
+            if let Some(metadata) = doc.descendants().find(|n| n.tag_name().name() == "metadata") {
+                for child in metadata.children() {
+                    if child.tag_name().name() == "title" { title = child.text().map(|s| s.to_string()); }
+                    else if child.tag_name().name() == "creator" { author = child.text().map(|s| s.to_string()); }
+                }
+            }
+        }
+
+        let opf_dir = if let Some(idx) = opf_path.rfind('/') { &opf_path[..idx] } else { "" };
+
+        let mut all_paragraphs = Vec::new();
+        for item in spine {
+            let full_path = readalong_core::epub::resolve_opf_relative(opf_dir, &item.href);
+            let html = match readalong_core::epub::read_zip_entry_as_string(&mut archive, &full_path) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let mut blocks = readalong_core::content::parse_chapter_html(&html, title.as_deref(), author.as_deref());
+            for block in &mut blocks { block.id = format!("{}_{}", item.id, block.id); }
+            all_paragraphs.append(&mut blocks);
+        }
+
+        let actual_model_path = if model_path.exists() { model_path } else if fallback_model.exists() { fallback_model } else {
+            set_error("Whisper model not found"); return;
+        };
+
+        let mut chunker = match AudioChunker::new(&wav_path) {
+            Ok(c) => c,
+            Err(e) => { tracing::error!("Audio chunker failed: {}", e); set_error("Audio processing failed"); return; }
+        };
+
+        let ctx_params = whisper_rs::WhisperContextParameters::default();
+        let ctx = match whisper_rs::WhisperContext::new_with_params(actual_model_path.to_str().unwrap(), ctx_params) {
+            Ok(c) => c,
+            Err(e) => { tracing::error!("Whisper load failed: {}", e); set_error("Whisper model load failed"); return; }
+        };
+
+        let mut state = match ctx.create_state() {
+            Ok(s) => s,
+            Err(e) => { tracing::error!("Whisper state failed: {}", e); set_error("Whisper state failed"); return; }
+        };
+
+        let mut aligner = FuzzyAligner::new(all_paragraphs);
+        let mut has_error = false;
+        let mut chunk_index = 0;
+        let total_audio_duration_sec = chunker.total_duration_sec();
+
+        loop {
+            {
+                let mut is_paused = false;
+                if let Ok(db_lock) = db.lock() {
+                    if let Ok(status) = db_lock.get_book_status(&book_id_clone) {
+                        if status == "Paused" { is_paused = true; }
+                    }
+                }
+                if is_paused { std::thread::sleep(std::time::Duration::from_secs(1)); continue; }
+            }
+
+            chunk_index += 1;
+            let chunk_res = match chunker.next_chunk(180) {
+                Ok(c) => c,
+                Err(e) => { tracing::error!("Chunk read failed: {}", e); set_error("Audio read failed"); has_error = true; break; }
+            };
+
+            if let Some((audio_data, time_offset_sec)) = chunk_res {
+                let asr_chunks = match transcribe_audio_chunk(&audio_data, time_offset_sec, &mut state) {
+                    Ok(c) => c,
+                    Err(e) => { tracing::error!("Transcription failed chunk {}: {}", chunk_index, e); set_error("Transcription failed"); has_error = true; break; }
+                };
+                aligner.add_chunks(asr_chunks);
+                aligner.align_current_buffer(false);
+
+                let current_sync = aligner.get_sync_points();
+                let total_time_sec = time_offset_sec + (audio_data.len() as f32 / 16000.0);
+                let current_min = total_time_sec / 60.0;
+                let total_min = total_audio_duration_sec / 60.0;
+                let status_msg = format!("Processing|{}|{}", current_min, total_min);
+
+                {
+                    let db_lock = db.lock().unwrap();
+                    let _ = db_lock.update_book_status(&book_id_clone, &status_msg);
+                    let _ = db_lock.save_sync_map(&book_id_clone, &current_sync);
+                }
+            } else {
+                break;
+            }
+        }
+
+        if has_error { return; }
+
+        aligner.align_current_buffer(true);
+        aligner.finish();
+        let final_sync = aligner.get_sync_points();
+
+        let db_lock = db.lock().unwrap();
+        let _ = db_lock.insert_book(
+            &book_id_clone,
+            "Unknown Title",
+            "Unknown Author",
+            epub_path.to_str().unwrap(),
+            audio_path.to_str().unwrap(),
+            "Processed Book",
+        );
+        let _ = db_lock.save_sync_map(&book_id_clone, &final_sync);
+        tracing::info!("Re-alignment complete for book {}", book_id_clone);
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        Json(ImportResponse {
+            book_id,
+            message: "Audio received, re-alignment started".to_string(),
         }),
     )
         .into_response()

@@ -13,7 +13,7 @@ import { TTSControls } from '../../components/TTSControls';
 
 export default function Reader() {
   const { id } = useParams<{ id: string }>();
-  const { activeJob } = useAlignment();
+  const { getJob } = useAlignment();
   const [meta, setMeta] = useState<BookMeta | null>(null);
   const [paragraphs, setParagraphs] = useState<ContentBlock[]>([]);
   const [audioUrl, setAudioUrl] = useState<string>('');
@@ -21,11 +21,17 @@ export default function Reader() {
   const [isLoading, setIsLoading] = useState(true);
   
   const [activeParagraphIndex, setActiveParagraphIndex] = useState<number | null>(null);
+  const [initialScrollIndex, setInitialScrollIndex] = useState(0);
   const [seekToMs, setSeekToMs] = useState<number | null>(null);
 
   const [showSettings, setShowSettings] = useState(false);
   const [showTOC, setShowTOC] = useState(false);
   const [ttsWordRange, setTtsWordRange] = useState<{ start: number, length: number } | null>(null);
+  const [ttsActive, setTtsActive] = useState(false);
+  const [ttsVoice, setTtsVoice] = useState('');
+  const [ttsRate, setTtsRate] = useState(1.0);
+  // Session ref: cancelled flag + snapshot of runtime config to avoid stale closures
+  const ttsSessionRef = useRef<{ cancelled: boolean; voice: string; rate: number } | null>(null);
   const [settings, setSettings] = useState<ReaderSettingsState>(() => {
     const saved = localStorage.getItem('reader-settings');
     return saved ? JSON.parse(saved) : defaultSettings;
@@ -39,6 +45,13 @@ export default function Reader() {
   useEffect(() => {
     localStorage.setItem('reader-settings', JSON.stringify(settings));
   }, [settings]);
+
+  // Auto-save reading position (paragraph index) whenever it changes
+  useEffect(() => {
+    if (id && activeParagraphIndex !== null && activeParagraphIndex > 0) {
+      localStorage.setItem(`tts_progress_${id}`, activeParagraphIndex.toString());
+    }
+  }, [id, activeParagraphIndex]);
 
   const syncEngineRef = useRef<PlaybackSync | null>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
@@ -93,6 +106,16 @@ export default function Reader() {
               paragraphIdMap.current.set(idx, block.id);
             }
           });
+
+          // Restore last TTS/reading position from localStorage
+          const savedIdx = localStorage.getItem(`tts_progress_${id}`);
+          if (savedIdx !== null) {
+            const idx = parseInt(savedIdx, 10);
+            if (!isNaN(idx) && idx > 0 && idx < data.paragraphs.length) {
+              setActiveParagraphIndex(idx);
+              setInitialScrollIndex(idx);
+            }
+          }
         }
       } catch (e) {
         console.error("Failed to load book:", e);
@@ -105,7 +128,9 @@ export default function Reader() {
     return () => {
       objectUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
       objectUrlsRef.current = [];
-      
+      // Cancel any active TTS on unmount
+      if (ttsSessionRef.current) ttsSessionRef.current.cancelled = true;
+      window.speechSynthesis.cancel();
       // Save progress on unmount
       if (id && latestTimeRef.current > 0) {
         updateBookProgress(id, latestTimeRef.current).catch(console.error);
@@ -124,7 +149,8 @@ export default function Reader() {
 
   // Poll for updates if this book is actively processing
   useEffect(() => {
-    if (id && activeJob?.bookId === id && activeJob.status === 'processing') {
+    const job = id ? getJob(id) : null;
+    if (id && job?.status === 'processing') {
       const poll = async () => {
         const data = await getBookData(id);
         if (data.syncMap && data.syncMap.length > 0) {
@@ -142,7 +168,7 @@ export default function Reader() {
       const interval = setInterval(poll, 2000);
       return () => clearInterval(interval);
     }
-  }, [id, activeJob?.bookId, activeJob?.status]);
+  }, [id, getJob(id ?? '')?.status]);
 
   const handleTimeUpdate = (currentTimeMs: number) => {
     latestTimeRef.current = currentTimeMs;
@@ -183,6 +209,11 @@ export default function Reader() {
         setActiveParagraphIndex(index);
       }
     }
+    // If TTS is active, jump to tapped paragraph
+    if (ttsSessionRef.current && !ttsSessionRef.current.cancelled) {
+      window.speechSynthesis.cancel();
+      startTTSFrom(index, ttsSessionRef.current.voice, ttsSessionRef.current.rate);
+    }
   };
 
   const handleTOCSelect = (index: number) => {
@@ -190,6 +221,95 @@ export default function Reader() {
     handleTextTap(index);
     setShowTOC(false); // Auto close TOC on select
   };
+
+  // ─── TTS Engine ──────────────────────────────────────────────────────────────
+  // Speak from a given paragraph index, advancing automatically through the book.
+  // Uses a session object to avoid stale-closure issues with React state.
+  function startTTSFrom(fromIndex: number, voiceURI: string, rate: number) {
+    // Cancel any existing session
+    if (ttsSessionRef.current) ttsSessionRef.current.cancelled = true;
+    window.speechSynthesis.cancel();
+
+    const session = { cancelled: false, voice: voiceURI, rate };
+    ttsSessionRef.current = session;
+    setTtsActive(true);
+
+    function speakIndex(index: number) {
+      if (session.cancelled || index >= paragraphs.length) {
+        if (!session.cancelled) {
+          setTtsActive(false);
+          setTtsWordRange(null);
+          ttsSessionRef.current = null;
+        }
+        return;
+      }
+
+      const block = paragraphs[index];
+
+      // Skip images and empty/heading blocks silently
+      if (block.tag === 'img' || !block.text?.trim()) {
+        speakIndex(index + 1);
+        return;
+      }
+
+      // Update visible highlight and scroll
+      setActiveParagraphIndex(index);
+      virtuosoRef.current?.scrollToIndex({ index, align: 'center', behavior: 'smooth' });
+      setTtsWordRange(null);
+
+      const utterance = new SpeechSynthesisUtterance(block.text);
+
+      if (session.voice) {
+        const voice = window.speechSynthesis.getVoices().find(v => v.voiceURI === session.voice);
+        if (voice) utterance.voice = voice;
+      }
+      utterance.rate = session.rate;
+
+      utterance.onboundary = (e) => {
+        if (e.name === 'word' && !session.cancelled) {
+          setTtsWordRange({ start: e.charIndex, length: e.charLength ?? 5 });
+        }
+      };
+
+      utterance.onend = () => {
+        if (!session.cancelled) {
+          setTtsWordRange(null);
+          speakIndex(index + 1);
+        }
+      };
+
+      utterance.onerror = (e) => {
+        // 'canceled'/'interrupted' are intentional stops — don't advance
+        if (e.error === 'canceled' || e.error === 'interrupted') return;
+        console.error('TTS error on paragraph', index, e.error);
+        if (!session.cancelled) speakIndex(index + 1);
+      };
+
+      window.speechSynthesis.speak(utterance);
+    }
+
+    speakIndex(fromIndex);
+  }
+
+  function handleTTSToggle() {
+    if (ttsActive) {
+      // Stop
+      if (ttsSessionRef.current) ttsSessionRef.current.cancelled = true;
+      window.speechSynthesis.cancel();
+      setTtsActive(false);
+      setTtsWordRange(null);
+      ttsSessionRef.current = null;
+    } else {
+      // Find a reasonable start paragraph
+      // Priority: currently active paragraph > first non-empty text paragraph
+      let startIndex = activeParagraphIndex ?? 0;
+      if (paragraphs[startIndex]?.tag === 'img' || !paragraphs[startIndex]?.text?.trim()) {
+        startIndex = paragraphs.findIndex(b => b.tag !== 'img' && !!b.text?.trim());
+        if (startIndex < 0) return; // no text in book
+      }
+      startTTSFrom(startIndex, ttsVoice, ttsRate);
+    }
+  }
 
   const currentChapterText = useMemo(() => {
     if (activeParagraphIndex === null) return '';
@@ -208,9 +328,10 @@ export default function Reader() {
   if (isLoading) return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>Loading...</div>;
   if (!meta) return <div>Book not found.</div>;
 
-  const isAligningThis = activeJob?.bookId === id && (activeJob?.status === 'processing' || activeJob?.status === 'paused');
-  const pMin = activeJob?.progressMin || 0;
-  const tMin = activeJob?.totalMin || 0;
+  const bookJob = id ? getJob(id) : null;
+  const isAligningThis = !!bookJob && (bookJob.status === 'processing' || bookJob.status === 'paused');
+  const pMin = bookJob?.progressMin || 0;
+  const tMin = bookJob?.totalMin || 0;
   const pDisplay = Math.floor(pMin);
   const tDisplay = Math.floor(tMin);
 
@@ -248,20 +369,20 @@ export default function Reader() {
         
         {/* Header */}
         <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.5rem', backgroundColor: 'var(--glass-bg)', backdropFilter: 'blur(12px)', borderBottom: '1px solid var(--border-color)', zIndex: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <button onClick={() => setShowTOC(!showTOC)} style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flex: 1, minWidth: 0 }}>
+            <button onClick={() => setShowTOC(!showTOC)} style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', flexShrink: 0 }}>
               <Menu size={24} />
             </button>
-            <Link to="/" style={{ color: 'var(--accent-primary)', textDecoration: 'none', fontWeight: 'bold', fontSize: '1.25rem', display: 'flex', alignItems: 'center' }}>
+            <Link to="/" style={{ color: 'var(--accent-primary)', textDecoration: 'none', fontWeight: 'bold', fontSize: '1.25rem', display: 'flex', alignItems: 'center', flexShrink: 0 }}>
               ReadAlong
             </Link>
-            <div style={{ width: '1px', height: '24px', background: 'var(--border-color)', margin: '0 0.5rem' }} />
-            <div style={{ display: 'flex', alignItems: 'center', fontSize: '0.9rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '300px' }}>
-              <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{meta.title}</span>
+            <div style={{ width: '1px', height: '24px', background: 'var(--border-color)', margin: '0 0.5rem', flexShrink: 0 }} />
+            <div style={{ display: 'flex', alignItems: 'center', fontSize: '0.9rem', color: 'var(--text-secondary)', overflow: 'hidden', minWidth: 0, flex: 1 }}>
+              <span style={{ color: 'var(--text-primary)', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{meta.title}</span>
               {currentChapterText && (
                 <>
-                  <span style={{ margin: '0 0.5rem' }}>/</span>
-                  {currentChapterText}
+                  <span style={{ margin: '0 0.5rem', flexShrink: 0 }}>/</span>
+                  <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{currentChapterText}</span>
                 </>
               )}
             </div>
@@ -269,9 +390,10 @@ export default function Reader() {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
             <TTSControls
-              text={paragraphs[activeParagraphIndex ?? 0]?.text || ''}
-              onBoundary={(charIndex, length) => setTtsWordRange({ start: charIndex, length })}
-              onEnd={() => setTtsWordRange(null)}
+              isPlaying={ttsActive}
+              onToggle={handleTTSToggle}
+              onVoiceChange={(uri) => setTtsVoice(uri)}
+              onRateChange={(r) => setTtsRate(r)}
             />
 
             <button onClick={() => setShowSettings(!showSettings)} style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -288,7 +410,7 @@ export default function Reader() {
         {isAligningThis && (
           <div style={{ width: '100%', backgroundColor: 'var(--bg-tertiary)', padding: '0.5rem 1rem', display: 'flex', alignItems: 'center', gap: '1rem', borderBottom: '1px solid var(--border-color)' }}>
              <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--accent-primary)', minWidth: '100px' }}>
-               {activeJob?.status === 'paused' ? 'Paused' : 'Aligning...'}
+               {bookJob?.status === 'paused' ? 'Paused' : 'Aligning...'}
              </div>
              <div style={{ flex: 1, height: '6px', background: 'var(--border-color)', borderRadius: '3px', overflow: 'hidden' }}>
                <div style={{ height: '100%', background: 'var(--accent-primary)', width: `${tMin > 0 ? (pMin / tMin) * 100 : 0}%`, transition: 'width 0.3s ease' }} />
@@ -304,6 +426,7 @@ export default function Reader() {
               ref={virtuosoRef}
               data={paragraphs}
               style={{ height: '100%' }}
+              initialTopMostItemIndex={initialScrollIndex}
               itemContent={(index, block) => {
                 const isActive = index === activeParagraphIndex;
                 

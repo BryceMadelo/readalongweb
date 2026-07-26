@@ -124,4 +124,12 @@ impl LibraryDb {
         let status: String = stmt.query_row(params![book_id], |row| row.get(0))?;
         Ok(status)
     }
+
+    pub fn get_book_paths(&self, book_id: &str) -> Result<(String, String)> {
+        let mut stmt = self.conn.prepare("SELECT epub_path, audio_path FROM books WHERE id = ?1")?;
+        let paths = stmt.query_row(params![book_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(paths)
+    }
 }

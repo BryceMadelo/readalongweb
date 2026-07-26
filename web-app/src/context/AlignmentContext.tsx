@@ -1,7 +1,7 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { updateSyncMap } from '../storage/db';
 
-interface AlignmentJob {
+export interface AlignmentJob {
   bookId: string;
   bookTitle: string;
   progressMsg: string;
@@ -10,122 +10,212 @@ interface AlignmentJob {
   totalMin?: number;
 }
 
+type JobMap = Record<string, AlignmentJob>;
+
 interface AlignmentContextType {
+  /** All currently tracked jobs, keyed by bookId */
+  jobs: JobMap;
+  /** Look up a single job by bookId */
+  getJob: (bookId: string) => AlignmentJob | null;
+  /** The most-recently-started active (non-complete/error) job — for global notification banners */
   activeJob: AlignmentJob | null;
   startJob: (job: AlignmentJob) => void;
-  updateJob: (progressMsg: string, progressMin?: number, totalMin?: number, status?: 'processing' | 'paused') => void;
-  pauseJob: () => Promise<void>;
-  resumeJob: () => Promise<void>;
-  completeJob: () => void;
-  failJob: (errorMsg: string) => void;
-  clearJob: () => void;
+  updateJob: (bookId: string, progressMsg: string, progressMin?: number, totalMin?: number, status?: 'processing' | 'paused') => void;
+  pauseJob: (bookId: string) => Promise<void>;
+  resumeJob: (bookId: string) => Promise<void>;
+  completeJob: (bookId: string) => void;
+  failJob: (bookId: string, errorMsg: string) => void;
+  clearJob: (bookId: string) => void;
 }
 
 const AlignmentContext = createContext<AlignmentContextType | null>(null);
 
+function loadJobsFromStorage(): JobMap {
+  try {
+    const saved = localStorage.getItem('alignmentJobs');
+    return saved ? JSON.parse(saved) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveJobsToStorage(jobs: JobMap) {
+  try {
+    localStorage.setItem('alignmentJobs', JSON.stringify(jobs));
+  } catch {
+    // storage quota exceeded — ignore
+  }
+}
+
 export function AlignmentProvider({ children }: { children: ReactNode }) {
-  const [activeJob, setActiveJob] = useState<AlignmentJob | null>(() => {
-    const saved = localStorage.getItem('activeAlignmentJob');
-    return saved ? JSON.parse(saved) : null;
-  });
+  const [jobs, setJobs] = useState<JobMap>(loadJobsFromStorage);
 
+  // Persist to localStorage on every change
   useEffect(() => {
-    if (activeJob) {
-      localStorage.setItem('activeAlignmentJob', JSON.stringify(activeJob));
-    } else {
-      localStorage.removeItem('activeAlignmentJob');
-    }
-  }, [activeJob]);
+    saveJobsToStorage(jobs);
+  }, [jobs]);
 
-  const startJob = (job: AlignmentJob) => setActiveJob(job);
-  const updateJob = (progressMsg: string, progressMin?: number, totalMin?: number, status?: 'processing' | 'paused') => {
-    setActiveJob((prev) => {
-      if (prev && prev.progressMsg === progressMsg && prev.status === (status || prev.status)) return prev;
-      return prev ? { ...prev, progressMsg, progressMin: progressMin ?? prev.progressMin, totalMin: totalMin ?? prev.totalMin, status: status || prev.status } : null;
+  // Derive the most-recently-started active job for backward-compat banner
+  const activeJob: AlignmentJob | null = (() => {
+    const active = Object.values(jobs).filter(
+      (j) => j.status === 'processing' || j.status === 'paused' || j.status === 'uploading'
+    );
+    return active.length > 0 ? active[active.length - 1] : null;
+  })();
+
+  const getJob = useCallback((bookId: string): AlignmentJob | null => {
+    return jobs[bookId] ?? null;
+  }, [jobs]);
+
+  const startJob = (job: AlignmentJob) => {
+    setJobs((prev) => ({ ...prev, [job.bookId]: job }));
+  };
+
+  const updateJob = (
+    bookId: string,
+    progressMsg: string,
+    progressMin?: number,
+    totalMin?: number,
+    status?: 'processing' | 'paused'
+  ) => {
+    setJobs((prev) => {
+      const existing = prev[bookId];
+      if (!existing) return prev;
+      const next: AlignmentJob = {
+        ...existing,
+        progressMsg,
+        progressMin: progressMin ?? existing.progressMin,
+        totalMin: totalMin ?? existing.totalMin,
+        status: status ?? existing.status,
+      };
+      // Skip re-render if nothing changed
+      if (
+        next.progressMsg === existing.progressMsg &&
+        next.status === existing.status &&
+        next.progressMin === existing.progressMin
+      ) {
+        return prev;
+      }
+      return { ...prev, [bookId]: next };
     });
   };
 
-  const pauseJob = async () => {
-    if (!activeJob) return;
+  const pauseJob = async (bookId: string) => {
     try {
       const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-      await fetch(`${API_URL}/pause/${activeJob.bookId}`, { method: 'POST' });
-      setActiveJob(prev => prev ? { ...prev, status: 'paused' } : null);
+      await fetch(`${API_URL}/pause/${bookId}`, { method: 'POST' });
+      setJobs((prev) =>
+        prev[bookId] ? { ...prev, [bookId]: { ...prev[bookId], status: 'paused' } } : prev
+      );
     } catch (e) {
-      console.error("Failed to pause", e);
+      console.error('Failed to pause', e);
     }
   };
 
-  const resumeJob = async () => {
-    if (!activeJob) return;
+  const resumeJob = async (bookId: string) => {
     try {
       const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-      await fetch(`${API_URL}/resume/${activeJob.bookId}`, { method: 'POST' });
-      setActiveJob(prev => prev ? { ...prev, status: 'processing' } : null);
+      await fetch(`${API_URL}/resume/${bookId}`, { method: 'POST' });
+      setJobs((prev) =>
+        prev[bookId] ? { ...prev, [bookId]: { ...prev[bookId], status: 'processing' } } : prev
+      );
     } catch (e) {
-      console.error("Failed to resume", e);
+      console.error('Failed to resume', e);
     }
   };
-  const completeJob = () => {
-    setActiveJob((prev) => prev ? { ...prev, status: 'complete', progressMsg: 'Sync map generated successfully!' } : null);
-  };
-  const failJob = (errorMsg: string) => {
-    setActiveJob((prev) => prev ? { ...prev, status: 'error', progressMsg: errorMsg } : null);
-  };
-  const clearJob = () => setActiveJob(null);
 
+  const completeJob = (bookId: string) => {
+    setJobs((prev) =>
+      prev[bookId]
+        ? {
+            ...prev,
+            [bookId]: {
+              ...prev[bookId],
+              status: 'complete',
+              progressMsg: 'Sync map generated successfully!',
+            },
+          }
+        : prev
+    );
+  };
+
+  const failJob = (bookId: string, errorMsg: string) => {
+    setJobs((prev) =>
+      prev[bookId]
+        ? { ...prev, [bookId]: { ...prev[bookId], status: 'error', progressMsg: errorMsg } }
+        : prev
+    );
+  };
+
+  const clearJob = (bookId: string) => {
+    setJobs((prev) => {
+      const next = { ...prev };
+      delete next[bookId];
+      return next;
+    });
+  };
+
+  // Polling loop — polls ALL currently-processing jobs
   useEffect(() => {
-    if (!activeJob || activeJob.status !== 'processing') {
-      return;
-    }
+    const processingBookIds = Object.values(jobs)
+      .filter((j) => j.status === 'processing')
+      .map((j) => j.bookId);
+
+    if (processingBookIds.length === 0) return;
+
+    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
     const pollInterval = setInterval(async () => {
-      try {
-        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-        const statusRes = await fetch(`${API_URL}/status/${activeJob.bookId}`);
-        if (statusRes.ok) {
-          const data = await statusRes.json();
-          // Always save intermediate sync points so playback works earlier
-          if (data.sync_map && data.sync_map.length > 0) {
-            await updateSyncMap(activeJob.bookId, data.sync_map);
-          }
-          
-          if (data.status === 'Processed Book') {
-            if (data.sync_map) {
-              completeJob();
-            } else {
-              failJob("Alignment finished but no sync map was returned.");
+      await Promise.all(
+        processingBookIds.map(async (bookId) => {
+          try {
+            const statusRes = await fetch(`${API_URL}/status/${bookId}`);
+            if (statusRes.ok) {
+              const data = await statusRes.json();
+
+              if (data.sync_map && data.sync_map.length > 0) {
+                await updateSyncMap(bookId, data.sync_map);
+              }
+
+              if (data.status === 'Processed Book') {
+                if (data.sync_map) {
+                  completeJob(bookId);
+                } else {
+                  failJob(bookId, 'Alignment finished but no sync map was returned.');
+                }
+              } else if (data.status.startsWith('Error')) {
+                failJob(bookId, data.status);
+              } else if (data.status.startsWith('Processing|')) {
+                const parts = data.status.split('|');
+                const pMin = parseFloat(parts[1]);
+                const tMin = parseFloat(parts[2]);
+                const pDisplay = Math.floor(pMin);
+                const tDisplay = Math.floor(tMin);
+                updateJob(bookId, `Processing (${pDisplay}m / ${tDisplay}m)`, pMin, tMin, 'processing');
+              } else if (data.status === 'Paused') {
+                updateJob(bookId, 'Paused', undefined, undefined, 'paused');
+              } else {
+                updateJob(bookId, data.status);
+              }
+            } else if (statusRes.status === 404) {
+              failJob(bookId, 'Alignment job lost (server restarted)');
             }
-          } else if (data.status.startsWith('Error')) {
-            failJob(data.status);
-          } else if (data.status.startsWith('Processing|')) {
-            const parts = data.status.split('|');
-            const pMin = parseFloat(parts[1]);
-            const tMin = parseFloat(parts[2]);
-            const pDisplay = Math.floor(pMin);
-            const tDisplay = Math.floor(tMin);
-            updateJob(`Processing (${pDisplay}m / ${tDisplay}m)`, pMin, tMin, 'processing');
-          } else if (data.status === 'Paused') {
-            updateJob('Paused', undefined, undefined, 'paused');
-          } else {
-            updateJob(data.status);
+          } catch (e) {
+            console.error(`Polling error for ${bookId}:`, e);
           }
-        } else if (statusRes.status === 404) {
-          // Job not found on server (e.g. server restarted), clear it
-          failJob("Alignment job lost (server restarted)");
-        }
-      } catch (e) {
-        console.error("Polling error:", e);
-      }
+        })
+      );
     }, 2000);
 
     return () => clearInterval(pollInterval);
-  }, [activeJob?.bookId, activeJob?.status]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(Object.values(jobs).filter(j => j.status === 'processing').map(j => j.bookId))]);
 
   return (
-    <AlignmentContext.Provider value={{ activeJob, startJob, updateJob, pauseJob, resumeJob, completeJob, failJob, clearJob }}>
+    <AlignmentContext.Provider
+      value={{ jobs, getJob, activeJob, startJob, updateJob, pauseJob, resumeJob, completeJob, failJob, clearJob }}
+    >
       {children}
-      {/* Toast removed as per design, progress is shown in Library and Reader */}
     </AlignmentContext.Provider>
   );
 }

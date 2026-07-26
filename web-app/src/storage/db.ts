@@ -79,7 +79,7 @@ export function initDB() {
 export async function saveBook(
   meta: BookMeta,
   paragraphs: ContentBlock[],
-  audio: Blob | File,
+  audio: Blob | File | undefined,
   syncMap: SyncPoint[],
   images: Record<string, Uint8Array> = {}
 ) {
@@ -88,7 +88,9 @@ export async function saveBook(
   
   await tx.objectStore('books').put(meta);
   await tx.objectStore('paragraphs').put({ bookId: meta.id, data: paragraphs });
-  await tx.objectStore('audio_files').put({ bookId: meta.id, blob: audio });
+  if (audio !== undefined) {
+    await tx.objectStore('audio_files').put({ bookId: meta.id, blob: audio });
+  }
   await tx.objectStore('sync_maps').put({ bookId: meta.id, points: syncMap });
   await tx.objectStore('epub_images').put({ bookId: meta.id, images });
   

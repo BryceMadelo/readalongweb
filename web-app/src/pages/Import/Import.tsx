@@ -1,15 +1,15 @@
-import { useState, useRef, DragEvent } from 'react';
+import { useState, useRef, type DragEvent } from 'react';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { load_epub_paragraphs, load_epub_images } from 'readalong-wasm';
-import { Upload, ArrowLeft, CheckCircle, File as FileIcon, X, Plus, Book, Music } from 'lucide-react';
-import { saveBook, updateSyncMap, type ContentBlock, getBookData } from '../../storage/db';
+import { Upload, ArrowLeft, CheckCircle, X, Plus, Book, Music } from 'lucide-react';
+import { saveBook, type ContentBlock, getBookData } from '../../storage/db';
 import { useAlignment } from '../../context/AlignmentContext';
 
 export default function Import() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const addAudioBookId = searchParams.get('add_audio');
-  const { startJob, failJob } = useAlignment();
+  const { startJob } = useAlignment();
   const [epubFile, setEpubFile] = useState<File | null>(null);
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -89,7 +89,7 @@ export default function Import() {
           bookData.images
         );
 
-        startJob({ bookId: addAudioBookId, bookTitle: bookData.meta.title, progressMsg: "Aligning text and audio...", status: 'processing' });
+        startJob({ bookId: addAudioBookId, bookTitle: bookData.meta.title, progressMsg: 'Aligning text and audio...', status: 'processing' });
 
         setSuccess(true);
         setTimeout(() => {
@@ -164,13 +164,13 @@ export default function Import() {
           progress: 0
         },
         validBlocks,
-        audioFile,
+        audioFile ?? undefined,
         [],
         processedImages
       );
 
       if (audioFile) {
-        startJob({ bookId: serverBookId, bookTitle: title, progressMsg: "Aligning text and audio...", status: 'processing' });
+        startJob({ bookId: serverBookId, bookTitle: title, progressMsg: 'Aligning text and audio...', status: 'processing' });
       }
 
       setSuccess(true);
@@ -180,9 +180,8 @@ export default function Import() {
 
     } catch (err: unknown) {
       console.error(err);
-      setError(err instanceof Error ? err.message : "An unexpected error occurred during import.");
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred during import.');
       setIsProcessing(false);
-      failJob("Import failed.");
     }
   };
 
@@ -432,8 +431,8 @@ export default function Import() {
         <button 
           className="btn btn-primary" 
           onClick={handleImport}
-          disabled={isProcessing || (!epubFile && !addAudioBookId) || (addAudioBookId && !audioFile)}
-          style={{ padding: '0.875rem 2rem', fontSize: '1rem', opacity: (isProcessing || (!epubFile && !addAudioBookId) || (addAudioBookId && !audioFile)) ? 0.5 : 1 }}
+          disabled={isProcessing || (!epubFile && !addAudioBookId) || !!(addAudioBookId && !audioFile)}
+          style={{ padding: '0.875rem 2rem', fontSize: '1rem', opacity: (isProcessing || (!epubFile && !addAudioBookId) || !!(addAudioBookId && !audioFile)) ? 0.5 : 1 }}
         >
           {isProcessing ? (addAudioBookId ? 'Adding Audio...' : 'Importing...') : (addAudioBookId ? 'Confirm Addition' : 'Complete Import')}
         </button>

@@ -2,88 +2,53 @@ import { useState, useEffect } from 'react';
 import { Play, Pause, Settings } from 'lucide-react';
 
 interface TTSControlsProps {
-  text: string;
-  onBoundary?: (charIndex: number, length: number) => void;
-  onEnd?: () => void;
+  isPlaying: boolean;
+  onToggle: () => void;
+  onVoiceChange: (voiceURI: string) => void;
+  onRateChange: (rate: number) => void;
 }
 
-export function TTSControls({ text, onBoundary, onEnd }: TTSControlsProps) {
+export function TTSControls({ isPlaying, onToggle, onVoiceChange, onRateChange }: TTSControlsProps) {
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState<string>('');
   const [rate, setRate] = useState(1.0);
-  const [isPlaying, setIsPlaying] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
     const loadVoices = () => {
       const available = window.speechSynthesis.getVoices();
+      if (available.length === 0) return;
       setVoices(available);
-      if (available.length > 0 && !selectedVoice) {
-        // Prefer a nice English voice
+      if (!selectedVoice) {
         const pref = available.find(v => v.lang.startsWith('en') && v.name.includes('Google'))
                   || available.find(v => v.lang.startsWith('en'))
                   || available[0];
         setSelectedVoice(pref.voiceURI);
+        onVoiceChange(pref.voiceURI);
       }
     };
 
     loadVoices();
-    if (speechSynthesis.onvoiceschanged !== undefined) {
-      speechSynthesis.onvoiceschanged = loadVoices;
-    }
-  }, [selectedVoice]);
-
-  useEffect(() => {
-    // Cleanup on unmount
-    return () => {
-      window.speechSynthesis.cancel();
-    };
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+    return () => { window.speechSynthesis.onvoiceschanged = null; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const togglePlay = () => {
-    if (isPlaying) {
-      window.speechSynthesis.cancel();
-      setIsPlaying(false);
-      onEnd?.();
-    } else {
-      if (!text) return;
+  const handleVoiceChange = (uri: string) => {
+    setSelectedVoice(uri);
+    onVoiceChange(uri);
+  };
 
-      window.speechSynthesis.cancel(); // clear queue
-
-      const utterance = new SpeechSynthesisUtterance(text);
-      if (selectedVoice) {
-        const voice = voices.find(v => v.voiceURI === selectedVoice);
-        if (voice) utterance.voice = voice;
-      }
-      utterance.rate = rate;
-
-      utterance.onboundary = (e) => {
-        if (e.name === 'word') {
-          onBoundary?.(e.charIndex, e.charLength || 5); // Fallback length if not provided by browser
-        }
-      };
-
-      utterance.onend = () => {
-        setIsPlaying(false);
-        onEnd?.();
-      };
-
-      utterance.onerror = (e) => {
-        console.error("TTS Error:", e);
-        setIsPlaying(false);
-        onEnd?.();
-      };
-
-      window.speechSynthesis.speak(utterance);
-      setIsPlaying(true);
-    }
+  const handleRateChange = (r: number) => {
+    setRate(r);
+    onRateChange(r);
   };
 
   return (
     <div style={{ position: 'relative' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
         <button
-          onClick={togglePlay}
+          onClick={onToggle}
           style={{
             background: isPlaying ? 'var(--accent-primary)' : 'transparent',
             border: isPlaying ? 'none' : '1px solid var(--border-color)',
@@ -138,7 +103,7 @@ export function TTSControls({ text, onBoundary, onEnd }: TTSControlsProps) {
             <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>Voice</label>
             <select
               value={selectedVoice}
-              onChange={(e) => setSelectedVoice(e.target.value)}
+              onChange={(e) => handleVoiceChange(e.target.value)}
               style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--border-color)', background: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
             >
               {voices.map(v => (
@@ -155,7 +120,7 @@ export function TTSControls({ text, onBoundary, onEnd }: TTSControlsProps) {
               max="2.0"
               step="0.1"
               value={rate}
-              onChange={(e) => setRate(parseFloat(e.target.value))}
+              onChange={(e) => handleRateChange(parseFloat(e.target.value))}
               style={{ width: '100%' }}
             />
           </div>

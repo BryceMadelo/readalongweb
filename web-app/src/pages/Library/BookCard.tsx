@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { BookOpen, Clock, Trash2, Edit2, Play, Pause, CheckCircle } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { BookOpen, Clock, Trash2, Edit2, Play, Pause, CheckCircle, Music } from 'lucide-react';
 import { useAlignment } from '../../context/AlignmentContext';
 import { type BookMeta, updateBookMeta } from '../../storage/db';
 
@@ -11,17 +11,19 @@ interface BookCardProps {
 }
 
 export function BookCard({ book, onDelete, onUpdate }: BookCardProps) {
-  const { activeJob, pauseJob, resumeJob } = useAlignment();
-  
+  const { getJob, pauseJob, resumeJob } = useAlignment();
+  const navigate = useNavigate();
+
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(book.title);
   const [editAuthor, setEditAuthor] = useState(book.author);
 
-  const isAligningThis = activeJob?.bookId === book.id && activeJob?.status !== 'complete' && activeJob?.status !== 'error';
-  const isPaused = isAligningThis && activeJob?.status === 'paused';
-  const pMin = isAligningThis ? (activeJob?.progressMin || 0) : 0;
-  const tMin = isAligningThis ? (activeJob?.totalMin || 0) : 0;
-  
+  const job = getJob(book.id);
+  const isAligningThis = !!job && job.status !== 'complete' && job.status !== 'error';
+  const isPaused = isAligningThis && job?.status === 'paused';
+  const pMin = job?.progressMin ?? 0;
+  const tMin = job?.totalMin ?? 0;
+
   // Display actual progress so it updates frequently
   const pDisplay = Math.floor(pMin);
   const tDisplay = Math.floor(tMin);
@@ -127,9 +129,9 @@ export function BookCard({ book, onDelete, onUpdate }: BookCardProps) {
                 onClick={(e) => { 
                   e.preventDefault(); 
                   if (isPaused) {
-                    resumeJob();
+                    resumeJob(book.id);
                   } else {
-                    pauseJob();
+                    pauseJob(book.id);
                   }
                 }}
                 style={{ background: 'var(--bg-secondary)', border: 'none', borderRadius: '50%', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--accent-primary)' }}
@@ -165,7 +167,7 @@ export function BookCard({ book, onDelete, onUpdate }: BookCardProps) {
              ) : (
                <>
                  <div style={{ height: '6px', background: 'var(--accent-primary)', borderRadius: '3px', width: '50%', marginRight: '1rem' }} />
-                 <span style={{ fontSize: '0.8rem', color: 'var(--accent-primary)', fontWeight: 600, whiteSpace: 'nowrap' }}>Fully Aligned</span>
+                 <span style={{ fontSize: '0.8rem', color: 'var(--accent-primary)', fontWeight: 600, whiteSpace: 'nowrap' }}>No Audio</span>
                </>
              )}
           </div>
@@ -179,6 +181,17 @@ export function BookCard({ book, onDelete, onUpdate }: BookCardProps) {
             <BookOpen size={18} /> Open Reader
           </button>
           
+          {/* Add / Replace Audio button — only shown when not currently aligning */}
+          {!isAligningThis && (
+            <button
+              onClick={(e) => { e.preventDefault(); navigate(`/import?add_audio=${book.id}`); }}
+              style={{ background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '8px', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', padding: '0.75rem 0.6rem', marginRight: '8px', fontSize: '0.8rem', whiteSpace: 'nowrap' }}
+              title="Add or replace audio track"
+            >
+              <Music size={16} />
+            </button>
+          )}
+
           <button 
             onClick={(e) => { e.preventDefault(); onDelete(book.id); }}
             style={{ background: 'transparent', border: 'none', color: 'var(--danger)', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '0.25rem' }}
