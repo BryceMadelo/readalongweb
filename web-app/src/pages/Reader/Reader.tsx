@@ -10,6 +10,7 @@ import { ReaderSettings } from './ReaderSettings';
 import { type ReaderSettingsState, defaultSettings } from './types';
 import { ReaderTOC } from './ReaderTOC';
 import { TTSControls } from '../../components/TTSControls';
+import { fetchWithAuth } from '../../utils/api';
 
 export default function Reader() {
   const { id } = useParams<{ id: string }>();
@@ -70,7 +71,22 @@ export default function Reader() {
       try {
         const data = await getBookData(id);
         if (data.meta) {
-          setMeta(data.meta);
+          let loadedMeta = data.meta;
+          // Fetch remote progress
+          const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+          try {
+            const res = await fetchWithAuth(`${API_URL}/progress/${id}`);
+            if (res.ok) {
+              const progressData = await res.json();
+              if (progressData.progress_ms != null && progressData.progress_ms > 0) {
+                loadedMeta = { ...data.meta, progress: progressData.progress_ms };
+              }
+            }
+          } catch (e) {
+            console.error("Failed to fetch remote progress", e);
+          }
+
+          setMeta(loadedMeta);
           setParagraphs(data.paragraphs);
           
           if (data.audioBlob) {
@@ -140,6 +156,21 @@ export default function Reader() {
   }, [id]);
 
   useEffect(() => {
+    return () => {
+      if (id && latestTimeRef.current > 0) {
+        updateBookProgress(id, latestTimeRef.current).catch(console.error);
+        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+        fetchWithAuth(`${API_URL}/progress/${id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ progress_ms: Math.floor(latestTimeRef.current) }),
+          keepalive: true
+        }).catch(console.error);
+      }
+    };
+  }, [id]);
+
+  useEffect(() => {
     // Only seek to saved progress once when audio first loads
     if (meta && audioUrl && !initializedTimeRef.current && meta.progress > 0) {
       setSeekToMs(meta.progress);
@@ -177,6 +208,13 @@ export default function Reader() {
     if (id && now - lastProgressSaveRef.current > 5000) {
       updateBookProgress(id, currentTimeMs).catch(console.error);
       lastProgressSaveRef.current = now;
+
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+      fetchWithAuth(`${API_URL}/progress/${id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ progress_ms: Math.floor(currentTimeMs) })
+      }).catch(console.error);
     }
 
     if (syncEngineRef.current) {

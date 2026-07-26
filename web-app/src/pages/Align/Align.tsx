@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, Save, Download } from 'lucide-react';
 import { PlaybackSync } from 'readalong-wasm';
 import { getBookData, saveBook, type BookMeta, type ContentBlock, type SyncPoint } from '../../storage/db';
+import { fetchWithAuth } from '../../utils/api';
 
 export default function Align() {
   const { id } = useParams<{ id: string }>();
@@ -155,7 +156,7 @@ export default function Align() {
       try {
           // Push to backend server
           const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-          const response = await fetch(`${API_URL}/sync_map/${meta.id}`, {
+          const response = await fetchWithAuth(`${API_URL}/sync_map/${meta.id}`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(sorted)

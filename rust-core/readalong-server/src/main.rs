@@ -1,6 +1,7 @@
 use axum::{
     routing::{get, post},
     Router,
+    middleware,
 };
 use std::net::SocketAddr;
 use tower_http::cors::CorsLayer;
@@ -9,11 +10,26 @@ mod import;
 mod transcribe;
 mod align;
 mod db;
+mod auth;
+mod progress;
+mod queue;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub db: std::sync::Arc<std::sync::Mutex<db::LibraryDb>>,
+    pub queue: std::sync::Arc<queue::JobQueue>,
+}
 
 #[tokio::main]
 async fn main() {
     // Initialize standard tracing/logging
     tracing_subscriber::fmt::init();
+
+    // FAIL FAST IF API_TOKEN IS NOT SET
+    if std::env::var("API_TOKEN").is_err() {
+        tracing::error!("FATAL: API_TOKEN environment variable is not set. The server requires a password for security.");
+        std::process::exit(1);
+    }
 
     let db_path_str = std::env::var("DB_PATH").unwrap_or_else(|_| "readalong_server.db".to_string());
     let db_path = std::path::Path::new(&db_path_str);
@@ -34,8 +50,14 @@ async fn main() {
         db::LibraryDb::new(db_path).expect("Failed to initialize database")
     ));
 
-    let app = Router::new()
-        .route("/", get(|| async { "ReadAlong Server is running" }))
+    let queue = queue::JobQueue::new(db.clone());
+
+    let state = AppState {
+        db: db.clone(),
+        queue,
+    };
+
+    let api_routes = Router::new()
         .route("/import", post(import::handle_import))
         .route("/add_audio/:book_id", post(import::handle_add_audio))
         .route("/status/:book_id", get(import::handle_status))
@@ -43,7 +65,13 @@ async fn main() {
         .route("/pause/:book_id", post(import::handle_pause))
         .route("/resume/:book_id", post(import::handle_resume))
         .route("/edit/:book_id", post(import::handle_edit))
-        .with_state(db.clone())
+        .route("/progress/:book_id", get(progress::get_progress).post(progress::update_progress))
+        .with_state(state)
+        .layer(middleware::from_fn(auth::auth_middleware));
+
+    let app = Router::new()
+        .route("/", get(|| async { "ReadAlong Server is running" }))
+        .merge(api_routes)
         .layer(CorsLayer::permissive())
         .layer(axum::extract::DefaultBodyLimit::max(4 * 1024 * 1024 * 1024)); // 4GB limit
 

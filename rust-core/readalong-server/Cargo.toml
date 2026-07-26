@@ -3,6 +3,9 @@ name = "readalong-server"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+cuda = ["whisper-rs/cuda"]
+
 [dependencies]
 axum = { version = "0.7", features = ["multipart"] }
 tokio = { version = "1.0", features = ["full"] }

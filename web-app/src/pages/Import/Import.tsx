@@ -4,6 +4,7 @@ import { load_epub_paragraphs, load_epub_images } from 'readalong-wasm';
 import { Upload, ArrowLeft, CheckCircle, X, Plus, Book, Music } from 'lucide-react';
 import { saveBook, type ContentBlock, getBookData } from '../../storage/db';
 import { useAlignment } from '../../context/AlignmentContext';
+import { fetchWithAuth } from '../../utils/api';
 
 export default function Import() {
   const navigate = useNavigate();
@@ -71,7 +72,7 @@ export default function Import() {
         formData.append('audio', audioFile);
 
         const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-        const response = await fetch(`${API_URL}/add_audio/${addAudioBookId}`, {
+        const response = await fetchWithAuth(`${API_URL}/add_audio/${addAudioBookId}`, {
             method: 'POST',
             body: formData,
         });
@@ -144,7 +145,7 @@ export default function Import() {
       }
 
       const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-      const response = await fetch(`${API_URL}/import`, {
+      const response = await fetchWithAuth(`${API_URL}/import`, {
           method: 'POST',
           body: formData,
       });
