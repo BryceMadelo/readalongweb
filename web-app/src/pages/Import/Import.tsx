@@ -1,21 +1,113 @@
-import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useState, useRef, DragEvent } from 'react';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { load_epub_paragraphs, load_epub_images } from 'readalong-wasm';
-import { Upload, Book, Music, ArrowLeft } from 'lucide-react';
-import { saveBook, type ContentBlock } from '../../storage/db';
+import { Upload, ArrowLeft, CheckCircle, File as FileIcon, X, Plus, Book, Music } from 'lucide-react';
+import { saveBook, updateSyncMap, type ContentBlock, getBookData } from '../../storage/db';
 import { useAlignment } from '../../context/AlignmentContext';
 
 export default function Import() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const addAudioBookId = searchParams.get('add_audio');
   const { startJob, failJob } = useAlignment();
   const [epubFile, setEpubFile] = useState<File | null>(null);
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<boolean>(false);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const epubInputRef = useRef<HTMLInputElement>(null);
+  const audioInputRef = useRef<HTMLInputElement>(null);
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
+      if (file.name.toLowerCase().endsWith('.epub')) {
+        setEpubFile(file);
+      } else {
+        setError("Please drop a valid .epub file.");
+      }
+    }
+  };
 
   const handleImport = async () => {
-    if (!epubFile || !audioFile) {
-      setError("Please provide both EPUB and Audio files to import a book.");
+    // If we're strictly in "add audio" mode
+    if (addAudioBookId) {
+      if (!audioFile) {
+        setError("Please select an audio file to add to the existing book.");
+        return;
+      }
+      setIsProcessing(true);
+      setError(null);
+      try {
+        const bookData = await getBookData(addAudioBookId);
+        if (!bookData || !bookData.meta) {
+           throw new Error("Could not find original book.");
+        }
+
+        const formData = new FormData();
+        formData.append('audio', audioFile);
+
+        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+        const response = await fetch(`${API_URL}/add_audio/${addAudioBookId}`, {
+            method: 'POST',
+            body: formData,
+        });
+
+        if (!response.ok) {
+            throw new Error(`Server returned ${response.status}: ${await response.text()}`);
+        }
+
+        // Re-save book with new audio blob
+        await saveBook(
+          bookData.meta,
+          bookData.paragraphs,
+          audioFile,
+          [],
+          bookData.images
+        );
+
+        startJob({ bookId: addAudioBookId, bookTitle: bookData.meta.title, progressMsg: "Aligning text and audio...", status: 'processing' });
+
+        setSuccess(true);
+        setTimeout(() => {
+          navigate('/');
+        }, 1500);
+
+      } catch (err: unknown) {
+        console.error(err);
+        setError(err instanceof Error ? err.message : "Failed to add audio.");
+        setIsProcessing(false);
+      }
+      return;
+    }
+
+
+    // Normal import mode
+    if (!epubFile) {
+      setError("An EPUB file is required to import a book.");
       return;
     }
 
@@ -23,7 +115,6 @@ export default function Import() {
     setError(null);
 
     try {
-      // 1. Process EPUB via WASM
       const arrayBuffer = await epubFile.arrayBuffer();
       const bytes = new Uint8Array(arrayBuffer);
       const epubData = load_epub_paragraphs(bytes);
@@ -36,40 +127,21 @@ export default function Import() {
         b.tag === 'img' || (b.text && b.text.trim().length > 0)
       );
       
-      const bookId = crypto.randomUUID();
       const title = epubFile.name.replace('.epub', '').replace(/[-_]/g, ' ');
 
-      // Use the global alignment context for background processing indication
-      startJob({ bookId, bookTitle: title, progressMsg: "Preparing sync map...", status: 'processing' });
-
-      // We don't decode the whole audio file at once because decoding a 10-hour
-      // audio blob directly causes severe RAM spikes and OOM.
-      // Instead, we pass the file directly to the worker, which uses ffmpeg.wasm
-      // to chunk-decode the massive file into small 30-second segments.
-      // --- NEW IMAGE EXTRACTION LOGIC ---
-      // 4. Extract images using our new Rust function
       const rawImages = load_epub_images(bytes); 
       const processedImages: Record<string, Uint8Array> = {};
       
       for (let i = 0; i < rawImages.length; i++) {
         const [path, data] = rawImages[i];
-        processedImages[path] = data; // Store raw Uint8Array against its zip path
+        processedImages[path] = data;
       }
-      console.log(`Extracted ${Object.keys(processedImages).length} images from the EPUB.`);
-      // ----------------------------------
 
-      // Post the files to the server
       const formData = new FormData();
       formData.append('epub', epubFile);
-      formData.append('audio', audioFile);
-
-      // Note: server response returns a new bookId, we'll use that instead of the local one for the DB,
-      // but to maintain local tracking we can just trust the server's ID going forward. Actually, the easiest
-      // approach is to let the server process it, then grab the server's ID.
-      // Wait, we already saved the book to IndexedDB with a local bookId. The server creates its own UUID.
-      // We should probably just pass the bookId to the server, or wait to create the local DB entry until the server confirms.
-      // But we navigated to the library already. We'll wait to create the local DB entry until after the first POST.
-      // Let's adjust this: we delete the local saveBook above, and do it below.
+      if (audioFile) {
+        formData.append('audio', audioFile);
+      }
 
       const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
       const response = await fetch(`${API_URL}/import`, {
@@ -83,7 +155,6 @@ export default function Import() {
 
       const { book_id: serverBookId } = await response.json();
 
-      // Save book with empty sync map using server's ID so it appears in the library instantly.
       await saveBook(
         {
           id: serverBookId,
@@ -94,14 +165,18 @@ export default function Import() {
         },
         validBlocks,
         audioFile,
-        [], // empty sync map initially
+        [],
         processedImages
       );
 
-      // Tell the AlignmentContext about the server ID so it can track it
-      startJob({ bookId: serverBookId, bookTitle: title, progressMsg: "Aligning text and audio...", status: 'processing' });
+      if (audioFile) {
+        startJob({ bookId: serverBookId, bookTitle: title, progressMsg: "Aligning text and audio...", status: 'processing' });
+      }
 
-      navigate('/'); // Go to library immediately
+      setSuccess(true);
+      setTimeout(() => {
+        navigate('/');
+      }, 1500);
 
     } catch (err: unknown) {
       console.error(err);
@@ -113,73 +188,254 @@ export default function Import() {
 
   return (
     <div className="container" style={{ paddingTop: '2rem', paddingBottom: '4rem', maxWidth: '800px' }}>
+      {success && (
+        <div style={{
+          position: 'fixed', top: '2rem', left: '50%', transform: 'translateX(-50%)',
+          backgroundColor: '#10b981', color: 'white', padding: '1rem 2rem', borderRadius: '8px',
+          boxShadow: '0 4px 6px rgba(0,0,0,0.1)', display: 'flex', alignItems: 'center', gap: '0.75rem',
+          zIndex: 1000, animation: 'fadeIn 0.3s ease-out'
+        }}>
+          <CheckCircle size={20} />
+          <span style={{ fontWeight: 500 }}>{addAudioBookId ? 'Audio track successfully added' : 'Book successfully imported to your library'}</span>
+        </div>
+      )}
+
       <Link to="/" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', textDecoration: 'none', marginBottom: '2rem', fontWeight: 500 }}>
         <ArrowLeft size={20} />
         Back to Library
       </Link>
       
-      <header style={{ marginBottom: '3rem' }}>
-        <h1>Import Book</h1>
-        <p style={{ color: 'var(--text-secondary)' }}>Upload your EPUB and Audio file to add a new book to your library.</p>
+      <header style={{ marginBottom: '2.5rem' }}>
+        <h1 style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>{addAudioBookId ? 'Add Audio Track' : 'Import Content'}</h1>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '1.1rem' }}>
+          {addAudioBookId ? 'Upload a narration file to sync with your existing book.' : 'Upload an EPUB book and optional narration to add to your library.'}
+        </p>
       </header>
 
       {error && (
-        <div className="glass-panel" style={{ padding: '1rem', marginBottom: '2rem', backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid var(--danger)', color: 'var(--danger)' }}>
+        <div className="glass-panel" style={{ padding: '1rem', marginBottom: '2rem', backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid var(--danger)', color: 'var(--danger)', borderRadius: '8px' }}>
           {error}
         </div>
       )}
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', marginBottom: '3rem' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem', marginBottom: '3rem' }}>
         
-        {/* EPUB Upload */}
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', padding: '1.5rem' }}>
-          <div style={{ padding: '1rem', borderRadius: '12px', backgroundColor: 'var(--bg-tertiary)', color: 'var(--accent-primary)' }}>
-            <Book size={32} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <h3 style={{ marginBottom: '0.25rem' }}>EPUB Book</h3>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: '0.5rem' }}>The book content (.epub)</p>
-            <input 
-              type="file" 
-              accept=".epub" 
-              onChange={(e) => setEpubFile(e.target.files?.[0] || null)}
-              style={{ width: '100%' }}
-            />
-          </div>
-        </div>
+        {/* Main Content (EPUB) */}
+        {!addAudioBookId && (
+          <section>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '1rem' }}>
+              <div>
+                <h2 style={{ fontSize: '1.25rem', marginBottom: '0.25rem' }}>Main Content (EPUB) <span style={{ color: 'var(--danger)' }}>*</span></h2>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>The primary text content of your book</p>
+              </div>
+            </div>
 
-        {/* Audio Upload */}
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', padding: '1.5rem' }}>
-          <div style={{ padding: '1rem', borderRadius: '12px', backgroundColor: 'var(--bg-tertiary)', color: 'var(--accent-primary)' }}>
-            <Music size={32} />
+            <div
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              onClick={() => !epubFile && epubInputRef.current?.click()}
+              style={{
+                border: `2px dashed ${isDragging ? 'var(--accent-primary)' : 'var(--border-color)'}`,
+                borderRadius: '12px',
+                padding: '3rem 2rem',
+                textAlign: 'center',
+                backgroundColor: isDragging ? 'rgba(59, 130, 246, 0.05)' : 'var(--bg-secondary)',
+                cursor: epubFile ? 'default' : 'pointer',
+                transition: 'all 0.2s ease',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '1rem'
+              }}
+            >
+              <input
+                type="file"
+                accept=".epub"
+                ref={epubInputRef}
+                onChange={(e) => {
+                  if (e.target.files && e.target.files.length > 0) {
+                    setEpubFile(e.target.files[0]);
+                  }
+                }}
+                style={{ display: 'none' }}
+              />
+
+              {!epubFile ? (
+                <>
+                  <div style={{
+                    width: '64px', height: '64px', borderRadius: '50%',
+                    backgroundColor: 'var(--bg-tertiary)', display: 'flex',
+                    alignItems: 'center', justifyContent: 'center',
+                    color: 'var(--accent-primary)', marginBottom: '0.5rem'
+                  }}>
+                    <Upload size={32} />
+                  </div>
+                  <div>
+                    <p style={{ fontSize: '1.1rem', fontWeight: 500, marginBottom: '0.25rem' }}>Drag and drop your EPUB file or click to browse</p>
+                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Supports .epub files up to 50MB</p>
+                  </div>
+                </>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', width: '100%' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '1rem', backgroundColor: 'var(--bg-tertiary)', borderRadius: '8px', width: '100%', maxWidth: '400px' }}>
+                    <Book size={24} color="var(--accent-primary)" />
+                    <div style={{ flex: 1, textAlign: 'left', overflow: 'hidden' }}>
+                      <p style={{ fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{epubFile.name}</p>
+                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>{formatFileSize(epubFile.size)}</p>
+                    </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setEpubFile(null); }}
+                      style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '0.5rem' }}
+                    >
+                      <X size={20} />
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#10b981', fontSize: '0.9rem', fontWeight: 500 }}>
+                    <CheckCircle size={18} />
+                    Metadata Ready
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* Audio Track (Optional) */}
+        <section>
+          <div style={{ marginBottom: '1rem' }}>
+            <h2 style={{ fontSize: '1.25rem', marginBottom: '0.25rem' }}>Audio Track <span style={{ color: 'var(--text-secondary)', fontSize: '1rem', fontWeight: 'normal' }}>{addAudioBookId ? '' : '(OPTIONAL)'}</span></h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>{addAudioBookId ? 'The professional narration file' : 'Sync a professional narration file later in the reader settings'}</p>
           </div>
-          <div style={{ flex: 1 }}>
-            <h3 style={{ marginBottom: '0.25rem' }}>Audio Track</h3>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: '0.5rem' }}>The audiobook file (.mp3, .m4a)</p>
+
+          <div style={{
+            border: '1px solid var(--border-color)',
+            borderRadius: '12px',
+            padding: '1.5rem',
+            backgroundColor: 'var(--bg-secondary)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '1rem'
+          }}>
             <input 
               type="file" 
               accept="audio/*" 
-              onChange={(e) => setAudioFile(e.target.files?.[0] || null)}
-              style={{ width: '100%' }}
+              ref={audioInputRef}
+              onChange={(e) => {
+                if (e.target.files && e.target.files.length > 0) {
+                  setAudioFile(e.target.files[0]);
+                }
+              }}
+              style={{ display: 'none' }}
             />
+
+            {!audioFile ? (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                  <div style={{ padding: '0.75rem', borderRadius: '8px', backgroundColor: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}>
+                    <Music size={24} />
+                  </div>
+                  <div>
+                    <p style={{ fontWeight: 500 }}>No audio track selected</p>
+                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Supports .mp3, .m4a</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => audioInputRef.current?.click()}
+                  className="btn"
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', backgroundColor: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}
+                >
+                  <Plus size={18} />
+                  Add Audio
+                </button>
+              </>
+            ) : (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flex: 1, overflow: 'hidden' }}>
+                  <div style={{ padding: '0.75rem', borderRadius: '8px', backgroundColor: 'var(--bg-tertiary)', color: 'var(--accent-primary)' }}>
+                    <Music size={24} />
+                  </div>
+                  <div style={{ flex: 1, overflow: 'hidden' }}>
+                    <p style={{ fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{audioFile.name}</p>
+                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>{formatFileSize(audioFile.size)}</p>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#10b981', fontSize: '0.9rem', fontWeight: 500 }}>
+                    <CheckCircle size={18} />
+                    Ready
+                  </div>
+                  <button
+                    onClick={() => setAudioFile(null)}
+                    className="btn"
+                    style={{ padding: '0.5rem', color: 'var(--text-secondary)', backgroundColor: 'transparent', border: '1px solid var(--border-color)' }}
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+              </>
+            )}
           </div>
-        </div>
+        </section>
+
+        {/* Organization */}
+        {!addAudioBookId && (
+          <section>
+            <div style={{ marginBottom: '1rem' }}>
+              <h2 style={{ fontSize: '1.25rem', marginBottom: '0.25rem' }}>Organization</h2>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Group your content for easier access</p>
+            </div>
+
+            <div style={{
+              border: '1px solid var(--border-color)',
+              borderRadius: '12px',
+              padding: '1.5rem',
+              backgroundColor: 'var(--bg-secondary)',
+            }}>
+              <label style={{ display: 'block', fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.5rem' }}>Collection</label>
+              <select
+                style={{
+                  width: '100%',
+                  padding: '0.75rem 1rem',
+                  borderRadius: '8px',
+                  border: '1px solid var(--border-color)',
+                  backgroundColor: 'var(--bg-tertiary)',
+                  color: 'var(--text-primary)',
+                  fontSize: '1rem',
+                  outline: 'none',
+                  appearance: 'none',
+                  cursor: 'pointer'
+                }}
+                defaultValue="uncategorized"
+              >
+                <option value="uncategorized">Uncategorized</option>
+                <option value="favorites">Favorites</option>
+                <option value="to-read">To Read</option>
+              </select>
+            </div>
+          </section>
+        )}
 
       </div>
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '1rem', borderTop: '1px solid var(--border-color)', paddingTop: '2rem' }}>
+        <button
+          onClick={() => navigate('/')}
+          className="btn"
+          style={{ padding: '0.875rem 1.5rem', backgroundColor: 'transparent', border: 'none', color: 'var(--text-secondary)', fontWeight: 500 }}
+          disabled={isProcessing}
+        >
+          Cancel
+        </button>
         <button 
           className="btn btn-primary" 
           onClick={handleImport}
-          disabled={isProcessing || !epubFile || !audioFile}
-          style={{ padding: '1rem 2rem', fontSize: '1.125rem', opacity: (isProcessing || !epubFile || !audioFile) ? 0.5 : 1 }}
+          disabled={isProcessing || (!epubFile && !addAudioBookId) || (addAudioBookId && !audioFile)}
+          style={{ padding: '0.875rem 2rem', fontSize: '1rem', opacity: (isProcessing || (!epubFile && !addAudioBookId) || (addAudioBookId && !audioFile)) ? 0.5 : 1 }}
         >
-          {isProcessing ? 'Processing...' : (
-            <>
-              <Upload size={20} />
-              Import to Library
-            </>
-          )}
+          {isProcessing ? (addAudioBookId ? 'Adding Audio...' : 'Importing...') : (addAudioBookId ? 'Confirm Addition' : 'Complete Import')}
         </button>
       </div>
     </div>
