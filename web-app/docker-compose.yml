@@ -11,6 +11,8 @@ services:
     volumes:
       - readalong_data:/app/data
     restart: unless-stopped
+    environment:
+      - API_TOKEN=${API_TOKEN}
     deploy:
       resources:
         reservations:

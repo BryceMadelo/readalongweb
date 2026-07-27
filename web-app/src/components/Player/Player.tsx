@@ -21,25 +21,25 @@ export default function Player({
   const audioRef = useRef<HTMLAudioElement>(null);
   const rafRef = useRef<number | null>(null);
   const onTimeUpdateRef = useRef(onTimeUpdate);
-  
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [isLoaded, setIsLoaded] = useState(false);
 
   // Keep callback ref updated
   useEffect(() => {
     onTimeUpdateRef.current = onTimeUpdate;
   }, [onTimeUpdate]);
 
-  // Handle external seek requests
+  // Handle external seek requests safely AFTER metadata is loaded
   useEffect(() => {
-    if (seekToMs !== undefined && seekToMs !== null && audioRef.current) {
+    if (isLoaded && seekToMs !== undefined && seekToMs !== null && audioRef.current) {
       audioRef.current.currentTime = seekToMs / 1000;
-      if (!isPlaying) {
-        audioRef.current.play().catch(console.error);
-      }
+      setCurrentTime(seekToMs / 1000);
+      // We do not auto-play here to respect browser autoplay policies.
+      // The user can click Play to resume from the jumped position.
     }
-  }, [seekToMs]);
+  }, [seekToMs, isLoaded]);
 
   // Request Animation Frame loop for highly accurate time updates
   const loop = () => {
@@ -124,7 +124,10 @@ export default function Player({
         src={audioSrc}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
-        onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+        onLoadedMetadata={(e) => {
+          setDuration(e.currentTarget.duration);
+          setIsLoaded(true);
+        }}
         onEnded={() => setIsPlaying(false)}
       />
 
