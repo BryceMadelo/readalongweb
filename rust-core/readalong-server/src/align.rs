@@ -186,7 +186,7 @@ impl FuzzyAligner {
                 break;
             }
 
-            let mut confidence: Option<f32> = None;
+            let confidence: Option<f32>;
             let timestamp_ms: u64;
 
             if best_start_idx != -1 && max_match_count > 0 {

@@ -6,6 +6,14 @@ pub struct LibraryDb {
     conn: Connection,
 }
 
+#[derive(Debug)]
+pub struct User {
+    pub id: String,
+    pub email: String,
+    pub password_hash: String,
+    pub created_at: i64,
+}
+
 impl LibraryDb {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = Connection::open(path)?;
@@ -25,6 +33,16 @@ impl LibraryDb {
 
     fn init_schema(&self) -> Result<()> {
         self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        self.conn.execute(
             "CREATE TABLE IF NOT EXISTS books (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
@@ -38,7 +56,6 @@ impl LibraryDb {
             [],
         )?;
 
-        // Try to add the column if the table already exists (for backwards compatibility)
         let _ = self.conn.execute("ALTER TABLE books ADD COLUMN status TEXT NOT NULL DEFAULT 'Unknown'", []);
         let _ = self.conn.execute("ALTER TABLE books ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default_user'", []);
 
@@ -63,6 +80,77 @@ impl LibraryDb {
             [],
         )?;
 
+        Ok(())
+    }
+
+    pub fn create_user(&self, id: &str, email: &str, password_hash: &str) -> Result<bool> {
+        let count: i64 = self.conn.query_row("SELECT count(*) FROM users", [], |row| row.get(0))?;
+        let is_first_user = count == 0;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        self.conn.execute(
+            "INSERT INTO users (id, email, password_hash, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![id, email, password_hash, now],
+        )?;
+
+        if is_first_user {
+            self.conn.execute("UPDATE books SET user_id = ?1 WHERE user_id = 'default_user'", params![id])?;
+            self.conn.execute("UPDATE sync_maps SET user_id = ?1 WHERE user_id = 'default_user'", params![id])?;
+            self.conn.execute("UPDATE reading_progress SET user_id = ?1 WHERE user_id = 'default_user'", params![id])?;
+        }
+
+        Ok(is_first_user)
+    }
+
+    pub fn get_user_by_email(&self, email: &str) -> Result<Option<User>> {
+        let mut stmt = self.conn.prepare("SELECT id, email, password_hash, created_at FROM users WHERE email = ?1")?;
+        let mut rows = stmt.query(params![email])?;
+        
+        if let Some(row) = rows.next()? {
+            Ok(Some(User {
+                id: row.get(0)?,
+                email: row.get(1)?,
+                password_hash: row.get(2)?,
+                created_at: row.get(3)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_user_by_id(&self, id: &str) -> Result<Option<User>> {
+        let mut stmt = self.conn.prepare("SELECT id, email, password_hash, created_at FROM users WHERE id = ?1")?;
+        let mut rows = stmt.query(params![id])?;
+        
+        if let Some(row) = rows.next()? {
+            Ok(Some(User {
+                id: row.get(0)?,
+                email: row.get(1)?,
+                password_hash: row.get(2)?,
+                created_at: row.get(3)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn update_user_password(&self, user_id: &str, new_hash: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE users SET password_hash = ?2 WHERE id = ?1",
+            params![user_id, new_hash],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_user_email(&self, user_id: &str, new_email: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE users SET email = ?2 WHERE id = ?1",
+            params![user_id, new_email],
+        )?;
         Ok(())
     }
 
@@ -93,6 +181,7 @@ impl LibraryDb {
     pub fn insert_book(
         &self,
         id: &str,
+        user_id: &str,
         title: &str,
         author: &str,
         epub_path: &str,
@@ -103,9 +192,6 @@ impl LibraryDb {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-
-        // Default user for now, prepares for real user_id
-        let user_id = "default_user";
 
         self.conn.execute(
             "INSERT INTO books (id, title, author, epub_path, audio_path, date_added, status, user_id)
@@ -134,13 +220,10 @@ impl LibraryDb {
         Ok(())
     }
 
-    pub fn save_sync_map(&self, book_id: &str, points: &[SyncPoint]) -> Result<()> {
+    pub fn save_sync_map(&self, user_id: &str, book_id: &str, points: &[SyncPoint]) -> Result<()> {
         let json = serde_json::to_string(points).map_err(|e| {
             rusqlite::Error::ToSqlConversionFailure(Box::new(e))
         })?;
-
-        // Default user for now, prepares for real user_id
-        let user_id = "default_user";
 
         self.conn.execute(
             "INSERT INTO sync_maps (book_id, points_json, user_id)
@@ -153,9 +236,9 @@ impl LibraryDb {
         Ok(())
     }
 
-    pub fn get_sync_map(&self, book_id: &str) -> Result<Vec<SyncPoint>> {
-        let mut stmt = self.conn.prepare("SELECT points_json FROM sync_maps WHERE book_id = ?1")?;
-        let json: String = stmt.query_row(params![book_id], |row| row.get(0))?;
+    pub fn get_sync_map(&self, user_id: &str, book_id: &str) -> Result<Vec<SyncPoint>> {
+        let mut stmt = self.conn.prepare("SELECT points_json FROM sync_maps WHERE book_id = ?1 AND user_id = ?2")?;
+        let json: String = stmt.query_row(params![book_id, user_id], |row| row.get(0))?;
 
         let points: Vec<SyncPoint> = serde_json::from_str(&json).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -170,11 +253,43 @@ impl LibraryDb {
         Ok(status)
     }
 
-    pub fn get_book_paths(&self, book_id: &str) -> Result<(String, String)> {
-        let mut stmt = self.conn.prepare("SELECT epub_path, audio_path FROM books WHERE id = ?1")?;
-        let paths = stmt.query_row(params![book_id], |row| {
+    pub fn get_book_paths(&self, user_id: &str, book_id: &str) -> Result<(String, String)> {
+        let mut stmt = self.conn.prepare("SELECT epub_path, audio_path FROM books WHERE id = ?1 AND user_id = ?2")?;
+        let paths = stmt.query_row(params![book_id, user_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
         Ok(paths)
     }
+
+    pub fn get_books_for_user(&self, user_id: &str) -> Result<Vec<crate::BookMeta>> {
+        let mut stmt = self.conn.prepare("SELECT id, title, author, date_added FROM books WHERE user_id = ?1 ORDER BY date_added DESC")?;
+        let rows = stmt.query_map(params![user_id], |row| {
+            Ok(crate::BookMeta {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                author: row.get(2)?,
+                date_added: row.get(3)?,
+                progress: 0.0, // We can populate this later or join it
+            })
+        })?;
+        
+        let mut books = Vec::new();
+        for r in rows {
+            if let Ok(b) = r {
+                books.push(b);
+            }
+        }
+        
+        // Also fetch progress for each book
+        for book in &mut books {
+            if let Ok(Some(p)) = self.get_reading_progress(user_id, &book.id) {
+                // Since progress_ms is stored, we might want to store progress as a number in frontend
+                // Actually, the frontend IDB stores progress as a number (ms). We'll set it here.
+                book.progress = p as f64;
+            }
+        }
+        
+        Ok(books)
+    }
 }
+

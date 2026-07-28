@@ -103,7 +103,7 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
 
   const pauseJob = async (bookId: string) => {
     try {
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
       await fetchWithAuth(`${API_URL}/pause/${bookId}`, { method: 'POST' });
       setJobs((prev) =>
         prev[bookId] ? { ...prev, [bookId]: { ...prev[bookId], status: 'paused' } } : prev
@@ -115,7 +115,7 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
 
   const resumeJob = async (bookId: string) => {
     try {
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
       await fetchWithAuth(`${API_URL}/resume/${bookId}`, { method: 'POST' });
       setJobs((prev) =>
         prev[bookId] ? { ...prev, [bookId]: { ...prev[bookId], status: 'processing' } } : prev
@@ -164,7 +164,7 @@ export function AlignmentProvider({ children }: { children: ReactNode }) {
 
     if (activeBookIds.length === 0) return;
 
-    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
 
     const pollInterval = setInterval(async () => {
       await Promise.all(

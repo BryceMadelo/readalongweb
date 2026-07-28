@@ -136,7 +136,7 @@ export async function getBooks(): Promise<BookMeta[]> {
 
 export async function getBookData(bookId: string) {
   const db = await initDB();
-  const tx = db.transaction(['books', 'paragraphs', 'audio_files', 'sync_maps', 'epub_images'], 'readonly');
+  const tx = db.transaction(['books', 'paragraphs', 'audio_files', 'sync_maps', 'epub_images'], 'readwrite');
   
   const meta = await tx.objectStore('books').get(bookId);
   const pData = await tx.objectStore('paragraphs').get(bookId);
@@ -144,10 +144,26 @@ export async function getBookData(bookId: string) {
   const sData = await tx.objectStore('sync_maps').get(bookId);
   const imgData = await tx.objectStore('epub_images').get(bookId);
   
+  let audioBlob = aData?.blob;
+  
+  // Need to import API functions dynamically to avoid circular dependencies if any
+  const { getAudioBlob } = await import('../utils/api');
+
+  if (!audioBlob) {
+    try {
+      audioBlob = await getAudioBlob(bookId);
+      if (audioBlob) {
+        await tx.objectStore('audio_files').put({ bookId, blob: audioBlob });
+      }
+    } catch (e) {
+      console.warn('Could not fetch audio for book', bookId, e);
+    }
+  }
+
   return {
     meta,
     paragraphs: pData?.data || [],
-    audioBlob: aData?.blob,
+    audioBlob: audioBlob,
     syncMap: sData?.points || [],
     images: imgData?.images || {}
   };
@@ -165,3 +181,36 @@ export async function deleteBook(bookId: string) {
   
   await tx.done;
 }
+
+export async function getStats() {
+  const books = await getBooks();
+  let booksRead = 0;
+  let hoursListened = 0;
+
+  for (const book of books) {
+    // If progress is near the end, we don't have total duration readily in meta but
+    // we can estimate based on sync points or just assume >95% of a known duration.
+    // Wait, progress is just a number (ms). We don't have total_duration in BookMeta!
+    // We can just calculate from sync_maps.
+    const db = await initDB();
+    const tx = db.transaction(['sync_maps'], 'readonly');
+    const sData = await tx.objectStore('sync_maps').get(book.id);
+    if (sData && sData.points.length > 0) {
+      const lastPoint = sData.points[sData.points.length - 1];
+      const totalMs = lastPoint.timestamp_ms;
+      if (totalMs > 0) {
+        hoursListened += totalMs / (1000 * 60 * 60);
+        if (book.progress >= totalMs * 0.95) {
+          booksRead += 1;
+        }
+      }
+    }
+  }
+
+  return {
+    booksRead,
+    hoursListened: Math.round(hoursListened),
+    streak: 0 // Optional placeholder
+  };
+}
+

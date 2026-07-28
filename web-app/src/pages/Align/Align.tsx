@@ -155,7 +155,7 @@ export default function Align() {
 
       try {
           // Push to backend server
-          const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+          const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
           const response = await fetchWithAuth(`${API_URL}/sync_map/${meta.id}`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },

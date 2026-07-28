@@ -73,7 +73,7 @@ export default function Reader() {
         if (data.meta) {
           let loadedMeta = data.meta;
           // Fetch remote progress
-          const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+          const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
           try {
             const res = await fetchWithAuth(`${API_URL}/progress/${id}`);
             if (res.ok) {
@@ -159,7 +159,7 @@ export default function Reader() {
     return () => {
       if (id && latestTimeRef.current > 0) {
         updateBookProgress(id, latestTimeRef.current).catch(console.error);
-        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
         fetchWithAuth(`${API_URL}/progress/${id}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -209,7 +209,7 @@ export default function Reader() {
       updateBookProgress(id, currentTimeMs).catch(console.error);
       lastProgressSaveRef.current = now;
 
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
       fetchWithAuth(`${API_URL}/progress/${id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

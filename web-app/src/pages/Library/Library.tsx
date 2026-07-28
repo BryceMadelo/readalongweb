@@ -1,32 +1,46 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { BookOpen, Plus, Search, Library as LibraryIcon, Compass, Clock, X } from 'lucide-react';
-import { getBooks, deleteBook, type BookMeta } from '../../storage/db';
+import { getBooks, deleteBook, type BookMeta, initDB } from '../../storage/db';
 import { BookCard } from './BookCard';
 import { useAlignment } from '../../context/AlignmentContext';
-import { fetchWithAuth } from '../../utils/api';
+import { fetchWithAuth, fetchBooks } from '../../utils/api';
+import { useAuth } from '../../context/AuthContext';
 
 export default function Library() {
+  const { user } = useAuth();
   const { activeJob } = useAlignment();
   const [books, setBooks] = useState<BookMeta[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState('All Books');
-  const [showToast, setShowToast] = useState(true);
+  const [dismissedBookId, setDismissedBookId] = useState<string | null>(null);
 
   const filters = ['All Books', 'In Progress', 'To Read', 'Completed', 'Favorites'];
 
   useEffect(() => {
-    if (activeJob?.status === 'processing') setShowToast(true);
-  }, [activeJob?.status]);
-
-  useEffect(() => {
     async function loadBooks() {
       try {
+        // Fetch books from server to sync
+        try {
+          const serverBooks = await fetchBooks();
+          const db = await initDB();
+          const tx = db.transaction('books', 'readwrite');
+          for (const book of serverBooks) {
+            const existing = await tx.store.get(book.id);
+            if (!existing) {
+              await tx.store.put(book);
+            }
+          }
+          await tx.done;
+        } catch (e) {
+          console.error("Failed to sync server books:", e);
+        }
+
         const loadedBooks = await getBooks();
         const sortedBooks = loadedBooks.sort((a, b) => b.dateAdded - a.dateAdded);
 
         // Fetch remote progress for each book
-        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
         const booksWithRemoteProgress = await Promise.all(sortedBooks.map(async (book) => {
           try {
             const res = await fetchWithAuth(`${API_URL}/progress/${book.id}`);
@@ -95,15 +109,15 @@ export default function Library() {
         </nav>
 
         {/* User Profile Card Pinned at Bottom */}
-        <div style={{ padding: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '1rem', marginTop: 'auto' }}>
+        <Link to="/profile" style={{ padding: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '1rem', marginTop: 'auto', textDecoration: 'none', color: 'inherit' }}>
           <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent-light), var(--accent-primary))', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 'bold' }}>
-            A
+            {user?.email?.charAt(0).toUpperCase()}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>Alex Reader</span>
+            <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>{user?.email?.split('@')[0]}</span>
             <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Premium Member</span>
           </div>
-        </div>
+        </Link>
       </aside>
 
       {/* Main Content Area */}
@@ -187,7 +201,7 @@ export default function Library() {
       </main>
 
       {/* Global Toast for Alignment Progress */}
-      {activeJob?.status === 'processing' && showToast && (() => {
+      {activeJob?.status === 'processing' && activeJob.bookId !== dismissedBookId && (() => {
         const title = books.find(b => b.id === activeJob.bookId)?.title || 'Unknown Book';
         const pMin = activeJob.progressMin || 0;
         const tMin = activeJob.totalMin || 0;
@@ -201,7 +215,7 @@ export default function Library() {
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
               <div style={{ fontSize: '0.85rem', fontWeight: 600 }}>Aligning "{title}"</div>
-              <button onClick={() => setShowToast(false)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}><X size={16} /></button>
+              <button onClick={() => setDismissedBookId(activeJob.bookId || null)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}><X size={16} /></button>
             </div>
             <div style={{ height: '4px', background: 'var(--bg-tertiary)', borderRadius: '2px', overflow: 'hidden' }}>
               <div style={{ height: '100%', background: 'var(--accent-primary)', width: `${pct}%`, transition: 'width 0.3s ease' }} />

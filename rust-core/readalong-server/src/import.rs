@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{Multipart, State},
+    extract::{Multipart, State, Extension},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -27,6 +27,7 @@ pub struct StatusResponse {
 }
 
 pub async fn handle_status(
+    Extension(user_id): Extension<crate::auth::UserId>,
     State(app_state): State<AppState>,
     AxumPath(book_id): AxumPath<String>,
 ) -> impl IntoResponse {
@@ -37,18 +38,19 @@ pub async fn handle_status(
     };
 
     // Always return sync map if it exists, so client can get partial progress
-    let sync_map = db_lock.get_sync_map(&book_id).ok();
+    let sync_map = db_lock.get_sync_map(&user_id.0, &book_id).ok();
 
     (StatusCode::OK, Json(StatusResponse { status, sync_map })).into_response()
 }
 
 pub async fn handle_update_sync_map(
+    Extension(user_id): Extension<crate::auth::UserId>,
     State(app_state): State<AppState>,
     AxumPath(book_id): AxumPath<String>,
     Json(sync_points): Json<Vec<readalong_core::sync::SyncPoint>>,
 ) -> impl IntoResponse {
     let db_lock = app_state.db.lock().unwrap();
-    if let Err(e) = db_lock.save_sync_map(&book_id, &sync_points) {
+    if let Err(e) = db_lock.save_sync_map(&user_id.0, &book_id, &sync_points) {
         tracing::error!("Failed to save sync map for {}: {}", book_id, e);
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -61,6 +63,7 @@ pub async fn handle_update_sync_map(
 }
 
 pub async fn handle_pause(
+    Extension(_user_id): Extension<crate::auth::UserId>,
     State(app_state): State<AppState>,
     AxumPath(book_id): AxumPath<String>,
 ) -> impl IntoResponse {
@@ -76,6 +79,7 @@ pub async fn handle_pause(
 }
 
 pub async fn handle_resume(
+    Extension(_user_id): Extension<crate::auth::UserId>,
     State(app_state): State<AppState>,
     AxumPath(book_id): AxumPath<String>,
 ) -> impl IntoResponse {
@@ -96,6 +100,7 @@ pub struct EditBookRequest {
 }
 
 pub async fn handle_edit(
+    Extension(_user_id): Extension<crate::auth::UserId>,
     State(app_state): State<AppState>,
     AxumPath(book_id): AxumPath<String>,
     Json(payload): Json<EditBookRequest>,
@@ -109,6 +114,7 @@ pub async fn handle_edit(
 }
 
 pub async fn handle_import(
+    Extension(user_id): Extension<crate::auth::UserId>,
     State(app_state): State<AppState>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
@@ -182,10 +188,12 @@ pub async fn handle_import(
     // Audio is optional — if not provided, save the book as "Ready" and skip alignment
     if audio_path.is_none() {
         let book_id_clone = book_id.clone();
+        let user_id_clone = user_id.0.clone();
         tokio::task::spawn_blocking(move || {
             let db_lock = app_state.db.lock().unwrap();
             if let Err(e) = db_lock.insert_book(
                 &book_id_clone,
+                &user_id_clone,
                 "Unknown Title",
                 "Unknown Author",
                 epub_path.to_str().unwrap(),
@@ -207,27 +215,58 @@ pub async fn handle_import(
 
     let audio_path = audio_path.unwrap();
     let book_id_clone = book_id.clone();
+    let user_id_clone = user_id.0.clone();
+    
+    // Insert the book as "Queued" before adding it to the queue
+    {
+        let db_lock = app_state.db.lock().unwrap();
+        if let Err(e) = db_lock.insert_book(
+            &book_id_clone,
+            &user_id_clone,
+            "Unknown Title",
+            "Unknown Author",
+            epub_path.to_str().unwrap(),
+            audio_path.to_str().unwrap(),
+            "Queued",
+        ) {
+            tracing::error!("Failed to insert book {}: {}", book_id_clone, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+        }
+    }
+
+    app_state.queue.add_job(book_id_clone.clone());
 
     // Fire and forget the processing task using spawn_blocking to prevent async starvation
     tokio::task::spawn_blocking(move || {
-        tracing::info!("Starting processing for book {}", book_id_clone);
+        tracing::info!("Starting processing task for book {}", book_id_clone);
+
+        // Wait for the queue to allow us to proceed (i.e. status is no longer 'Queued...')
+        loop {
+            let mut is_queued = false;
+            if let Ok(db_lock) = app_state.db.lock() {
+                if let Ok(status) = db_lock.get_book_status(&book_id_clone) {
+                    if status.starts_with("Queued") {
+                        is_queued = true;
+                    }
+                } else {
+                    return; // deleted?
+                }
+            }
+            if is_queued {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            } else {
+                break;
+            }
+        }
 
         // Update database status: Processing (in a real app, we'd have a status column)
         {
             let db_lock = app_state.db.lock().unwrap();
-            if let Err(e) = db_lock.insert_book(
+            if let Err(e) = db_lock.update_book_status(
                 &book_id_clone,
-                "Unknown Title",
-                "Unknown",
-                epub_path.to_str().unwrap(),
-                audio_path.to_str().unwrap(),
                 "Processing...",
             ) {
-                tracing::error!(
-                    "Failed to insert initial book state {}: {}",
-                    book_id_clone,
-                    e
-                );
+                tracing::error!("Failed to update book status to Processing... {}: {}", book_id_clone, e);
             }
         }
 
@@ -236,6 +275,7 @@ pub async fn handle_import(
             let db_lock = app_state.db.lock().unwrap();
             if let Err(e) = db_lock.insert_book(
                 &book_id_clone,
+                &user_id_clone,
                 "Unknown Title",
                 "Unknown",
                 epub_path.to_str().unwrap(),
@@ -397,7 +437,6 @@ pub async fn handle_import(
         };
 
         let mut aligner = FuzzyAligner::new(all_paragraphs);
-        let mut total_time_sec = 0.0;
         let mut has_error = false;
         let mut chunk_index = 0;
 
@@ -450,7 +489,7 @@ pub async fn handle_import(
                 aligner.align_current_buffer(false);
 
                 let current_sync = aligner.get_sync_points();
-                total_time_sec = time_offset_sec + (audio_data.len() as f32 / 16000.0);
+                let total_time_sec = time_offset_sec + (audio_data.len() as f32 / 16000.0);
 
                 // Update DB with intermediate progress
                 let current_min = total_time_sec / 60.0;
@@ -465,7 +504,7 @@ pub async fn handle_import(
                     ) {
                         tracing::error!("Failed to update partial book status: {}", e);
                     }
-                    if let Err(e) = db_lock.save_sync_map(&book_id_clone, &current_sync) {
+                    if let Err(e) = db_lock.save_sync_map(&user_id_clone, &book_id_clone, &current_sync) {
                         tracing::error!("Failed to save partial sync map: {}", e);
                     }
                 }
@@ -490,6 +529,7 @@ pub async fn handle_import(
         let db_lock = app_state.db.lock().unwrap();
         if let Err(e) = db_lock.insert_book(
             &book_id_clone,
+            &user_id_clone,
             "Unknown Title",
             "Unknown Author",
             epub_path.to_str().unwrap(),
@@ -499,7 +539,7 @@ pub async fn handle_import(
             tracing::error!("Failed to update book status {}: {}", book_id_clone, e);
         }
 
-        if let Err(e) = db_lock.save_sync_map(&book_id_clone, &final_sync) {
+        if let Err(e) = db_lock.save_sync_map(&user_id_clone, &book_id_clone, &final_sync) {
             tracing::error!("Failed to save sync map for {}: {}", book_id_clone, e);
         }
 
@@ -518,6 +558,7 @@ pub async fn handle_import(
 
 /// POST /add_audio/:book_id — attach (or replace) an audio track and re-run alignment
 pub async fn handle_add_audio(
+    Extension(user_id): Extension<crate::auth::UserId>,
     State(app_state): State<AppState>,
     AxumPath(book_id): AxumPath<String>,
     mut multipart: Multipart,
@@ -580,7 +621,7 @@ pub async fn handle_add_audio(
     // Retrieve the existing epub path from the DB
     let epub_path_str = {
         let db_lock = app_state.db.lock().unwrap();
-        match db_lock.get_book_paths(&book_id) {
+        match db_lock.get_book_paths(&user_id.0, &book_id) {
             Ok((epub, _)) => epub,
             Err(_) => return (StatusCode::NOT_FOUND, "Book not found").into_response(),
         }
@@ -591,16 +632,38 @@ pub async fn handle_add_audio(
     }
 
     let book_id_clone = book_id.clone();
+    let user_id_clone = user_id.0.clone();
     let tmp_dir_clone = tmp_dir.clone();
+
+    app_state.queue.add_job(book_id_clone.clone());
 
     // Kick off alignment (same pipeline as handle_import)
     tokio::task::spawn_blocking(move || {
-        tracing::info!("Re-aligning book {} with new audio", book_id_clone);
+        tracing::info!("Starting processing task for re-align book {}", book_id_clone);
+
+        loop {
+            let mut is_queued = false;
+            if let Ok(db_lock) = app_state.db.lock() {
+                if let Ok(status) = db_lock.get_book_status(&book_id_clone) {
+                    if status.starts_with("Queued") {
+                        is_queued = true;
+                    }
+                } else {
+                    return; // deleted?
+                }
+            }
+            if is_queued {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            } else {
+                break;
+            }
+        }
 
         {
             let db_lock = app_state.db.lock().unwrap();
             if let Err(e) = db_lock.insert_book(
                 &book_id_clone,
+                &user_id_clone,
                 "Unknown Title",
                 "Unknown Author",
                 epub_path.to_str().unwrap(),
@@ -735,7 +798,7 @@ pub async fn handle_add_audio(
                 {
                     let db_lock = app_state.db.lock().unwrap();
                     let _ = db_lock.update_book_status(&book_id_clone, &status_msg);
-                    let _ = db_lock.save_sync_map(&book_id_clone, &current_sync);
+                    let _ = db_lock.save_sync_map(&user_id_clone, &book_id_clone, &current_sync);
                 }
             } else {
                 break;
@@ -751,13 +814,14 @@ pub async fn handle_add_audio(
         let db_lock = app_state.db.lock().unwrap();
         let _ = db_lock.insert_book(
             &book_id_clone,
+            &user_id_clone,
             "Unknown Title",
             "Unknown Author",
             epub_path.to_str().unwrap(),
             audio_path.to_str().unwrap(),
             "Processed Book",
         );
-        let _ = db_lock.save_sync_map(&book_id_clone, &final_sync);
+        let _ = db_lock.save_sync_map(&user_id_clone, &book_id_clone, &final_sync);
         tracing::info!("Re-alignment complete for book {}", book_id_clone);
     });
 

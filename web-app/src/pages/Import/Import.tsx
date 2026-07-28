@@ -71,7 +71,7 @@ export default function Import() {
         const formData = new FormData();
         formData.append('audio', audioFile);
 
-        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
         const response = await fetchWithAuth(`${API_URL}/add_audio/${addAudioBookId}`, {
             method: 'POST',
             body: formData,
@@ -144,7 +144,7 @@ export default function Import() {
         formData.append('audio', audioFile);
       }
 
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
       const response = await fetchWithAuth(`${API_URL}/import`, {
           method: 'POST',
           body: formData,
