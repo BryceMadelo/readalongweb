@@ -10,6 +10,7 @@ import Align from './pages/Align/Align';
 import Login from './pages/Login/Login';
 import Signup from './pages/Signup/Signup';
 import Profile from './pages/Profile/Profile';
+import RecentActivities from './pages/RecentActivities/RecentActivities';
 import { AlignmentProvider } from './context/AlignmentContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
@@ -70,6 +71,7 @@ function AppRoutes() {
         <Route path="/signup" element={<Signup />} />
         
         <Route path="/" element={<ProtectedRoute><Library /></ProtectedRoute>} />
+        <Route path="/activity" element={<ProtectedRoute><RecentActivities /></ProtectedRoute>} />
         <Route path="/import" element={<ProtectedRoute><Import /></ProtectedRoute>} />
         <Route path="/reader/:id" element={<ProtectedRoute><Reader /></ProtectedRoute>} />
         <Route path="/align/:id" element={<ProtectedRoute><Align /></ProtectedRoute>} />

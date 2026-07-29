@@ -62,6 +62,19 @@ pub async fn handle_update_sync_map(
     (StatusCode::OK, "Sync map updated successfully").into_response()
 }
 
+pub async fn handle_get_sync_map(
+    Extension(user_id): Extension<crate::auth::UserId>,
+    State(app_state): State<AppState>,
+    AxumPath(book_id): AxumPath<String>,
+) -> impl IntoResponse {
+    let db_lock = app_state.db.lock().unwrap();
+    
+    match db_lock.get_sync_map(&user_id.0, &book_id) {
+        Ok(points) => (StatusCode::OK, Json(points)).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "Sync map not found").into_response(),
+    }
+}
+
 pub async fn handle_pause(
     Extension(_user_id): Extension<crate::auth::UserId>,
     State(app_state): State<AppState>,
@@ -100,17 +113,119 @@ pub struct EditBookRequest {
 }
 
 pub async fn handle_edit(
-    Extension(_user_id): Extension<crate::auth::UserId>,
+    Extension(user_id): Extension<crate::auth::UserId>,
     State(app_state): State<AppState>,
     AxumPath(book_id): AxumPath<String>,
     Json(payload): Json<EditBookRequest>,
 ) -> impl IntoResponse {
     let db_lock = app_state.db.lock().unwrap();
-    if let Err(e) = db_lock.update_book_meta(&book_id, &payload.title, &payload.author) {
+    if let Err(e) = db_lock.update_book_meta(&user_id.0, &book_id, &payload.title, &payload.author) {
         tracing::error!("Failed to edit book {}: {}", book_id, e);
         return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
     }
     (StatusCode::OK, "Updated").into_response()
+}
+
+pub async fn handle_delete_book(
+    Extension(user_id): Extension<crate::auth::UserId>,
+    State(app_state): State<AppState>,
+    AxumPath(book_id): AxumPath<String>,
+) -> impl IntoResponse {
+    let db_lock = app_state.db.lock().unwrap();
+    
+    // Attempt to clean up files
+    if let Ok((epub, audio)) = db_lock.get_book_paths(&user_id.0, &book_id) {
+        let _ = std::fs::remove_file(&epub);
+        let _ = std::fs::remove_file(&audio);
+    }
+
+    if let Err(e) = db_lock.delete_book(&user_id.0, &book_id) {
+        tracing::error!("Failed to delete book {}: {}", book_id, e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+    }
+    
+    // Attempt to remove directory
+    let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| ".".to_string());
+    let dir_path = std::path::Path::new(&data_dir).join("tmp_uploads").join(&book_id);
+    let _ = std::fs::remove_dir_all(&dir_path);
+
+    (StatusCode::OK, "Deleted").into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct FavoriteBookRequest {
+    pub is_favorite: bool,
+}
+
+pub async fn handle_favorite(
+    Extension(user_id): Extension<crate::auth::UserId>,
+    State(app_state): State<AppState>,
+    AxumPath(book_id): AxumPath<String>,
+    Json(payload): Json<FavoriteBookRequest>,
+) -> impl IntoResponse {
+    let db_lock = app_state.db.lock().unwrap();
+    if let Err(e) = db_lock.set_favorite(&user_id.0, &book_id, payload.is_favorite) {
+        tracing::error!("Failed to favorite book {}: {}", book_id, e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+    }
+    (StatusCode::OK, "Updated").into_response()
+}
+
+pub async fn handle_upload_cover(
+    Extension(user_id): Extension<crate::auth::UserId>,
+    State(app_state): State<AppState>,
+    AxumPath(book_id): AxumPath<String>,
+    mut multipart: axum::extract::Multipart,
+) -> impl IntoResponse {
+    let mut cover_path: Option<String> = None;
+    let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| ".".to_string());
+    
+    while let Some(field) = multipart.next_field().await.unwrap_or(None) {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "cover" {
+            let bytes = field.bytes().await.unwrap_or_default();
+            if bytes.len() > 0 {
+                let dir_path = std::path::Path::new(&data_dir).join("tmp_uploads").join(&book_id);
+                std::fs::create_dir_all(&dir_path).ok();
+                let path = dir_path.join("cover.jpg");
+                if let Ok(_) = std::fs::write(&path, &bytes) {
+                    cover_path = Some(path.to_str().unwrap().to_string());
+                }
+            }
+        }
+    }
+    
+    if let Some(path) = cover_path {
+        let db_lock = app_state.db.lock().unwrap();
+        if let Err(e) = db_lock.set_cover_image(&user_id.0, &book_id, &path) {
+            tracing::error!("Failed to save cover image for book {}: {}", book_id, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+        }
+        (StatusCode::OK, "Cover uploaded").into_response()
+    } else {
+        (StatusCode::BAD_REQUEST, "No cover image provided").into_response()
+    }
+}
+
+pub async fn handle_get_cover(
+    Extension(user_id): Extension<crate::auth::UserId>,
+    State(app_state): State<AppState>,
+    AxumPath(book_id): AxumPath<String>,
+    req: axum::extract::Request,
+) -> impl IntoResponse {
+    let cover_path = {
+        let db_lock = app_state.db.lock().unwrap();
+        db_lock.get_cover_image(&user_id.0, &book_id).unwrap_or(None)
+    };
+    
+    if let Some(path) = cover_path {
+        match tower::ServiceExt::oneshot(tower_http::services::ServeFile::new(&path), req).await {
+            Ok(res) => res.into_response(),
+            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Error serving file").into_response(),
+        }
+    } else {
+        (StatusCode::NOT_FOUND, "Cover not found").into_response()
+    }
 }
 
 pub async fn handle_import(
@@ -134,9 +249,24 @@ pub async fn handle_import(
 
     let mut epub_path = None;
     let mut audio_path = None;
+    let mut title = String::from("Unknown Title");
+    let mut author = String::from("Unknown Author");
 
     while let Ok(Some(mut field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
+        
+        if name == "title" {
+            if let Ok(text) = field.text().await {
+                title = text;
+            }
+            continue;
+        } else if name == "author" {
+            if let Ok(text) = field.text().await {
+                author = text;
+            }
+            continue;
+        }
+
         let file_name = field.file_name().unwrap_or("unknown").to_string();
 
         let is_epub = name == "epub" || file_name.ends_with(".epub");
@@ -194,8 +324,8 @@ pub async fn handle_import(
             if let Err(e) = db_lock.insert_book(
                 &book_id_clone,
                 &user_id_clone,
-                "Unknown Title",
-                "Unknown Author",
+                &title,
+                &author,
                 epub_path.to_str().unwrap(),
                 "",
                 "Ready",
@@ -215,16 +345,14 @@ pub async fn handle_import(
 
     let audio_path = audio_path.unwrap();
     let book_id_clone = book_id.clone();
-    let user_id_clone = user_id.0.clone();
     
-    // Insert the book as "Queued" before adding it to the queue
     {
         let db_lock = app_state.db.lock().unwrap();
         if let Err(e) = db_lock.insert_book(
             &book_id_clone,
-            &user_id_clone,
-            "Unknown Title",
-            "Unknown Author",
+            &user_id.0,
+            &title,
+            &author,
             epub_path.to_str().unwrap(),
             audio_path.to_str().unwrap(),
             "Queued",
@@ -233,7 +361,7 @@ pub async fn handle_import(
             return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
         }
     }
-
+    let user_id_clone = user_id.0.clone();
     app_state.queue.add_job(book_id_clone.clone());
 
     // Fire and forget the processing task using spawn_blocking to prevent async starvation
@@ -414,6 +542,10 @@ pub async fn handle_import(
             }
         };
 
+        // Acquire the global alignment lock before doing ANY Whisper inference or state creation
+        // This prevents CUDA OOM or memory pool corruption if multiple alignments happen.
+        let _alignment_guard = app_state.alignment_lock.lock().unwrap();
+
         let ctx_params = whisper_rs::WhisperContextParameters::default();
         let ctx = match whisper_rs::WhisperContext::new_with_params(
             actual_model_path.to_str().unwrap(),
@@ -459,10 +591,10 @@ pub async fn handle_import(
                 }
             }
 
-            // Process 3 minutes of audio at a time
+            // Process 60 seconds of audio at a time to prevent OOM on low-memory machines
             chunk_index += 1;
             tracing::info!("Attempting to read chunk {}...", chunk_index);
-            let chunk_res = match chunker.next_chunk(180) {
+            let chunk_res = match chunker.next_chunk(60) {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!("Failed to read chunk {}: {}", chunk_index, e);

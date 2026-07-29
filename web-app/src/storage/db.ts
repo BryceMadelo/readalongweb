@@ -7,6 +7,18 @@ export interface BookMeta {
   coverImage?: string; // base64 or blob URL
   dateAdded: number;
   progress: number;
+  isFavorite?: boolean;
+  genre?: string;
+  durationMs?: number;
+  hasAudio?: boolean;
+}
+
+export interface HistoryActivity {
+  id: string;
+  type: string;
+  message: string;
+  bookId?: string;
+  timestamp: number;
 }
 
 export interface SyncPoint {
@@ -45,14 +57,19 @@ interface ReadAlongDB extends DBSchema {
     key: string; // bookId
     value: { bookId: string; images: Record<string, Uint8Array> };
   };
+  history: {
+    key: string;
+    value: HistoryActivity;
+    indexes: { 'by-date': number };
+  };
 }
 
 let dbPromise: Promise<IDBPDatabase<ReadAlongDB>> | null = null;
 
 export function initDB() {
   if (!dbPromise) {
-    // BUMP THIS NUMBER TO 4! 
-    dbPromise = openDB<ReadAlongDB>('readalong-db', 4, {
+    // BUMP THIS NUMBER TO 5! 
+    dbPromise = openDB<ReadAlongDB>('readalong-db', 5, {
       upgrade(db) {
         if (!db.objectStoreNames.contains('books')) {
           const bookStore = db.createObjectStore('books', { keyPath: 'id' });
@@ -69,6 +86,10 @@ export function initDB() {
         }
         if (!db.objectStoreNames.contains('epub_images')) {
           db.createObjectStore('epub_images', { keyPath: 'bookId' });
+        }
+        if (!db.objectStoreNames.contains('history')) {
+          const historyStore = db.createObjectStore('history', { keyPath: 'id' });
+          historyStore.createIndex('by-date', 'timestamp');
         }
       },
     });
@@ -127,6 +148,24 @@ export async function updateBookProgress(bookId: string, progress: number) {
     await store.put(meta);
   }
   await tx.done;
+
+  // Sync to server
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+  try {
+    const token = localStorage.getItem('readalong_api_token');
+    if (token) {
+      await fetch(`${API_URL}/progress/${bookId}`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ progress_ms: Math.round(progress) })
+      });
+    }
+  } catch (e) {
+    console.error("Failed to sync progress to server:", e);
+  }
 }
 
 export async function getBooks(): Promise<BookMeta[]> {
@@ -136,36 +175,82 @@ export async function getBooks(): Promise<BookMeta[]> {
 
 export async function getBookData(bookId: string) {
   const db = await initDB();
-  const tx = db.transaction(['books', 'paragraphs', 'audio_files', 'sync_maps', 'epub_images'], 'readwrite');
   
+  // Read existing data
+  let tx = db.transaction(['books', 'paragraphs', 'audio_files', 'sync_maps', 'epub_images'], 'readonly');
   const meta = await tx.objectStore('books').get(bookId);
   const pData = await tx.objectStore('paragraphs').get(bookId);
   const aData = await tx.objectStore('audio_files').get(bookId);
   const sData = await tx.objectStore('sync_maps').get(bookId);
   const imgData = await tx.objectStore('epub_images').get(bookId);
-  
-  let audioBlob = aData?.blob;
+  await tx.done;
   
   // Need to import API functions dynamically to avoid circular dependencies if any
-  const { getAudioBlob } = await import('../utils/api');
+  const { getEpubBlob, getSyncMap } = await import('../utils/api');
 
-  if (!audioBlob) {
+  // We no longer download the audio blob into IndexedDB.
+  // Instead, the Reader component will stream the audio directly from the backend.
+  let hasAudio = false;
+  if (meta && (meta as any).hasAudio) {
+      hasAudio = true;
+  } else {
+      hasAudio = true;
+  }
+
+  let paragraphs = pData?.data || [];
+  let images = imgData?.images || {};
+
+  if (paragraphs.length === 0) {
     try {
-      audioBlob = await getAudioBlob(bookId);
-      if (audioBlob) {
-        await tx.objectStore('audio_files').put({ bookId, blob: audioBlob });
+      const epubBlob = await getEpubBlob(bookId);
+      const arrayBuffer = await epubBlob.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      const { load_epub_paragraphs, load_epub_images } = await import('readalong-wasm');
+      
+      const epubData = load_epub_paragraphs(bytes);
+      
+      let writeTx = db.transaction(['paragraphs', 'epub_images'], 'readwrite');
+      if (!epubData.error) {
+        paragraphs = epubData.blocks.filter((b: any) => 
+          b.tag === 'img' || (b.text && b.text.trim().length > 0)
+        );
+        await writeTx.objectStore('paragraphs').put({ bookId, data: paragraphs });
+      }
+
+      const rawImages = load_epub_images(bytes); 
+      for (let i = 0; i < rawImages.length; i++) {
+        const [path, data] = rawImages[i];
+        images[path] = data;
+      }
+      if (Object.keys(images).length > 0) {
+         await writeTx.objectStore('epub_images').put({ bookId, images });
+      }
+      await writeTx.done;
+    } catch (e) {
+      console.warn('Could not fetch or parse EPUB for book', bookId, e);
+    }
+  }
+
+  let syncMap = sData?.points || [];
+  if (syncMap.length === 0) {
+    try {
+      syncMap = await getSyncMap(bookId);
+      if (syncMap.length > 0) {
+        let writeTx = db.transaction(['sync_maps'], 'readwrite');
+        await writeTx.objectStore('sync_maps').put({ bookId, points: syncMap });
+        await writeTx.done;
       }
     } catch (e) {
-      console.warn('Could not fetch audio for book', bookId, e);
+      console.warn('Could not fetch sync map for book', bookId, e);
     }
   }
 
   return {
     meta,
-    paragraphs: pData?.data || [],
-    audioBlob: audioBlob,
-    syncMap: sData?.points || [],
-    images: imgData?.images || {}
+    paragraphs,
+    hasAudio,
+    syncMap,
+    images
   };
 }
 
@@ -188,10 +273,10 @@ export async function getStats() {
   let hoursListened = 0;
 
   for (const book of books) {
-    // If progress is near the end, we don't have total duration readily in meta but
-    // we can estimate based on sync points or just assume >95% of a known duration.
-    // Wait, progress is just a number (ms). We don't have total_duration in BookMeta!
-    // We can just calculate from sync_maps.
+    if (book.progress > 0) {
+      hoursListened += book.progress / (1000 * 60 * 60);
+    }
+    
     const db = await initDB();
     const tx = db.transaction(['sync_maps'], 'readonly');
     const sData = await tx.objectStore('sync_maps').get(book.id);
@@ -199,7 +284,6 @@ export async function getStats() {
       const lastPoint = sData.points[sData.points.length - 1];
       const totalMs = lastPoint.timestamp_ms;
       if (totalMs > 0) {
-        hoursListened += totalMs / (1000 * 60 * 60);
         if (book.progress >= totalMs * 0.95) {
           booksRead += 1;
         }
@@ -208,9 +292,41 @@ export async function getStats() {
   }
 
   return {
-    booksRead,
-    hoursListened: Math.round(hoursListened),
+    booksRead: books.length, // Display books in library instead of completed books
+    hoursListened: Math.round(hoursListened * 10) / 10, // Round to 1 decimal place
     streak: 0 // Optional placeholder
   };
 }
 
+export async function toggleFavorite(bookId: string): Promise<boolean> {
+  const db = await initDB();
+  const tx = db.transaction('books', 'readwrite');
+  const book = await tx.store.get(bookId);
+  let isFavorite = false;
+  if (book) {
+    isFavorite = !book.isFavorite;
+    book.isFavorite = isFavorite;
+    await tx.store.put(book);
+  }
+  await tx.done;
+  return isFavorite;
+}
+
+export async function addHistory(type: string, message: string, bookId?: string) {
+  const db = await initDB();
+  const tx = db.transaction('history', 'readwrite');
+  const id = crypto.randomUUID();
+  await tx.store.put({
+    id,
+    type,
+    message,
+    bookId,
+    timestamp: Date.now()
+  });
+  await tx.done;
+}
+
+export async function getHistory(): Promise<HistoryActivity[]> {
+  const db = await initDB();
+  return db.getAllFromIndex('history', 'by-date');
+}

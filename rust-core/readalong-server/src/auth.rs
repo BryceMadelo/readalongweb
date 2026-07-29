@@ -24,29 +24,47 @@ pub struct Claims {
 pub struct UserId(pub String);
 
 pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, StatusCode> {
-    let auth_header = req
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|val| val.to_str().ok());
-
-    if let Some(auth_header) = auth_header {
-        if let Some(token) = auth_header.strip_prefix("Bearer ") {
-            let mut validation = Validation::default();
-            validation.validate_exp = true;
-            match decode::<Claims>(
-                token,
-                &DecodingKey::from_secret(JWT_SECRET.as_bytes()),
-                &validation,
-            ) {
-                Ok(token_data) => {
-                    req.extensions_mut().insert(UserId(token_data.claims.sub));
-                    return Ok(next.run(req).await);
-                }
-                Err(_) => return Err(StatusCode::UNAUTHORIZED),
+    let mut token_opt = None;
+    
+    // Check Authorization header
+    if let Some(auth_header) = req.headers().get(axum::http::header::AUTHORIZATION) {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if let Some(token) = auth_str.strip_prefix("Bearer ") {
+                token_opt = Some(token.to_string());
             }
         }
     }
-    
+
+    // Check query parameter
+    if token_opt.is_none() {
+        if let Some(query) = req.uri().query() {
+            for pair in query.split('&') {
+                if let Some((k, v)) = pair.split_once('=') {
+                    if k == "token" {
+                        token_opt = Some(v.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(token) = token_opt {
+        let mut validation = Validation::default();
+        validation.validate_exp = true;
+        match decode::<Claims>(
+            &token,
+            &DecodingKey::from_secret(JWT_SECRET.as_bytes()),
+            &validation,
+        ) {
+            Ok(token_data) => {
+                req.extensions_mut().insert(UserId(token_data.claims.sub));
+                return Ok(next.run(req).await);
+            }
+            Err(_) => return Err(StatusCode::UNAUTHORIZED),
+        }
+    }
+
     Err(StatusCode::UNAUTHORIZED)
 }
 

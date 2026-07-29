@@ -51,13 +51,17 @@ impl LibraryDb {
                 audio_path TEXT NOT NULL,
                 date_added INTEGER NOT NULL,
                 status TEXT NOT NULL DEFAULT 'Unknown',
-                user_id TEXT NOT NULL DEFAULT 'default_user'
+                user_id TEXT NOT NULL DEFAULT 'default_user',
+                is_favorite INTEGER NOT NULL DEFAULT 0,
+                cover_image_path TEXT
             )",
             [],
         )?;
 
         let _ = self.conn.execute("ALTER TABLE books ADD COLUMN status TEXT NOT NULL DEFAULT 'Unknown'", []);
         let _ = self.conn.execute("ALTER TABLE books ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default_user'", []);
+        let _ = self.conn.execute("ALTER TABLE books ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0", []);
+        let _ = self.conn.execute("ALTER TABLE books ADD COLUMN cover_image_path TEXT", []);
 
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS sync_maps (
@@ -212,12 +216,34 @@ impl LibraryDb {
         Ok(())
     }
 
-    pub fn update_book_meta(&self, book_id: &str, title: &str, author: &str) -> Result<()> {
+    pub fn update_book_meta(&self, user_id: &str, book_id: &str, title: &str, author: &str) -> Result<()> {
         self.conn.execute(
-            "UPDATE books SET title = ?2, author = ?3 WHERE id = ?1",
-            params![book_id, title, author],
+            "UPDATE books SET title = ?2, author = ?3 WHERE id = ?1 AND user_id = ?4",
+            params![book_id, title, author, user_id],
         )?;
         Ok(())
+    }
+
+    pub fn set_favorite(&self, user_id: &str, book_id: &str, is_favorite: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE books SET is_favorite = ?2 WHERE id = ?1 AND user_id = ?3",
+            params![book_id, if is_favorite { 1 } else { 0 }, user_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_cover_image(&self, user_id: &str, book_id: &str, cover_path: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE books SET cover_image_path = ?2 WHERE id = ?1 AND user_id = ?3",
+            params![book_id, cover_path, user_id],
+        )?;
+        Ok(())
+    }
+    
+    pub fn get_cover_image(&self, user_id: &str, book_id: &str) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare("SELECT cover_image_path FROM books WHERE id = ?1 AND user_id = ?2")?;
+        let cover_path: Option<String> = stmt.query_row(params![book_id, user_id], |row| row.get(0)).unwrap_or(None);
+        Ok(cover_path)
     }
 
     pub fn save_sync_map(&self, user_id: &str, book_id: &str, points: &[SyncPoint]) -> Result<()> {
@@ -261,15 +287,29 @@ impl LibraryDb {
         Ok(paths)
     }
 
+    pub fn delete_book(&self, user_id: &str, book_id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM books WHERE id = ?1 AND user_id = ?2", params![book_id, user_id])?;
+        self.conn.execute("DELETE FROM sync_maps WHERE book_id = ?1 AND user_id = ?2", params![book_id, user_id])?;
+        self.conn.execute("DELETE FROM reading_progress WHERE book_id = ?1 AND user_id = ?2", params![book_id, user_id])?;
+        Ok(())
+    }
+
     pub fn get_books_for_user(&self, user_id: &str) -> Result<Vec<crate::BookMeta>> {
-        let mut stmt = self.conn.prepare("SELECT id, title, author, date_added FROM books WHERE user_id = ?1 ORDER BY date_added DESC")?;
+        let mut stmt = self.conn.prepare("SELECT id, title, author, date_added, is_favorite, cover_image_path FROM books WHERE user_id = ?1 ORDER BY date_added DESC")?;
         let rows = stmt.query_map(params![user_id], |row| {
+            let cover_path: Option<String> = row.get(5)?;
+            // Just return a boolean-like presence or URL if path exists.
+            let cover_image = cover_path.map(|_| "/api/books/".to_string() + &row.get::<_, String>(0).unwrap() + "/cover");
             Ok(crate::BookMeta {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 author: row.get(2)?,
                 date_added: row.get(3)?,
                 progress: 0.0, // We can populate this later or join it
+                is_favorite: row.get::<_, i32>(4)? > 0,
+                cover_image,
+                duration_ms: None,
+                has_audio: false,
             })
         })?;
         
@@ -280,12 +320,23 @@ impl LibraryDb {
             }
         }
         
-        // Also fetch progress for each book
+        // Also fetch progress and sync details for each book
         for book in &mut books {
             if let Ok(Some(p)) = self.get_reading_progress(user_id, &book.id) {
-                // Since progress_ms is stored, we might want to store progress as a number in frontend
-                // Actually, the frontend IDB stores progress as a number (ms). We'll set it here.
                 book.progress = p as f64;
+            }
+            
+            // Try to find the total duration and check if it has audio by reading the sync_map
+            if let Ok(points) = self.get_sync_map(user_id, &book.id) {
+                if !points.is_empty() {
+                    book.has_audio = true;
+                    if let Some(last) = points.last() {
+                        let ms = last.timestamp_ms;
+                        book.duration_ms = Some(ms as f64);
+                    }
+                }
+            } else {
+                book.has_audio = false;
             }
         }
         

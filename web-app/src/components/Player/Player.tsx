@@ -8,6 +8,8 @@ interface PlayerProps {
   seekToMs?: number | null;
   bookTitle?: string;
   bookCover?: string;
+  onPlay?: () => void;
+  onPause?: () => void;
 }
 
 export default function Player({ 
@@ -16,7 +18,9 @@ export default function Player({
   onSeek,
   seekToMs,
   bookTitle = "ReadAlong",
-  bookCover = ""
+  bookCover = "",
+  onPlay,
+  onPause
 }: PlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const rafRef = useRef<number | null>(null);
@@ -26,18 +30,23 @@ export default function Player({
   const [duration, setDuration] = useState(0);
   const [isLoaded, setIsLoaded] = useState(false);
 
+  const pendingSeekRef = useRef<number | null>(null);
+
   // Keep callback ref updated
   useEffect(() => {
     onTimeUpdateRef.current = onTimeUpdate;
   }, [onTimeUpdate]);
 
-  // Handle external seek requests safely AFTER metadata is loaded
+  // Handle external seek requests safely AFTER browser can play
   useEffect(() => {
     if (isLoaded && seekToMs !== undefined && seekToMs !== null && audioRef.current) {
+      console.log('[Player] Seeking audio to', seekToMs / 1000);
       audioRef.current.currentTime = seekToMs / 1000;
       setCurrentTime(seekToMs / 1000);
-      // We do not auto-play here to respect browser autoplay policies.
-      // The user can click Play to resume from the jumped position.
+      
+      // Browsers often report the currentTime as updated synchronously, but abort the seek asynchronously.
+      // We MUST ALWAYS queue it for onPlay to guarantee it applies when playback actually starts.
+      pendingSeekRef.current = seekToMs / 1000;
     }
   }, [seekToMs, isLoaded]);
 
@@ -83,6 +92,12 @@ export default function Player({
 
   const togglePlay = () => {
     if (audioRef.current) {
+      if (pendingSeekRef.current !== null) {
+        console.log('[Player] Applying queued seek before playback:', pendingSeekRef.current);
+        audioRef.current.currentTime = pendingSeekRef.current;
+        pendingSeekRef.current = null;
+      }
+
       if (isPlaying) {
         audioRef.current.pause();
       } else {
@@ -96,6 +111,7 @@ export default function Player({
     if (audioRef.current) {
       audioRef.current.currentTime = newTime;
       setCurrentTime(newTime);
+      pendingSeekRef.current = newTime;
       onSeek?.(Math.floor(newTime * 1000));
     }
   };
@@ -122,13 +138,13 @@ export default function Player({
       <audio 
         ref={audioRef}
         src={audioSrc}
-        onPlay={() => setIsPlaying(true)}
-        onPause={() => setIsPlaying(false)}
-        onLoadedMetadata={(e) => {
+        onPlay={() => { setIsPlaying(true); onPlay?.(); }}
+        onPause={() => { setIsPlaying(false); onPause?.(); }}
+        onCanPlay={(e) => {
           setDuration(e.currentTarget.duration);
           setIsLoaded(true);
         }}
-        onEnded={() => setIsPlaying(false)}
+        onEnded={() => { setIsPlaying(false); onPause?.(); }}
       />
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 1rem' }}>

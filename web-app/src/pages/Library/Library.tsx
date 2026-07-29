@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { BookOpen, Plus, Search, Library as LibraryIcon, Compass, Clock, X } from 'lucide-react';
 import { getBooks, deleteBook, type BookMeta, initDB } from '../../storage/db';
 import { BookCard } from './BookCard';
+import { Sidebar } from '../../components/Sidebar';
 import { useAlignment } from '../../context/AlignmentContext';
 import { fetchWithAuth, fetchBooks } from '../../utils/api';
 import { useAuth } from '../../context/AuthContext';
@@ -25,10 +26,44 @@ export default function Library() {
           const serverBooks = await fetchBooks();
           const db = await initDB();
           const tx = db.transaction('books', 'readwrite');
-          for (const book of serverBooks) {
+          const serverBookIds = new Set(serverBooks.map((b: any) => b.id));
+          
+          for (let book of serverBooks) {
+            // Handle if backend returned snake_case 'date_added' instead of 'dateAdded'
+            if ('date_added' in book && !('dateAdded' in book)) {
+               book.dateAdded = book.date_added;
+               delete book.date_added;
+            }
+            
             const existing = await tx.store.get(book.id);
-            if (!existing) {
+            if (!existing || !existing.dateAdded) {
               await tx.store.put(book);
+            } else {
+              // Update local metadata with backend truth
+              existing.title = book.title;
+              existing.author = book.author;
+              existing.progress = book.progress;
+              if (book.hasAudio !== undefined) {
+                existing.hasAudio = book.hasAudio;
+              }
+              if (book.durationMs !== undefined) {
+                existing.durationMs = book.durationMs;
+              }
+              if (book.coverImage !== undefined) {
+                existing.coverImage = book.coverImage;
+              }
+              if (book.isFavorite !== undefined) {
+                existing.isFavorite = book.isFavorite;
+              }
+              await tx.store.put(existing);
+            }
+          }
+
+          // Delete any local books that no longer exist on the server
+          const localBooks = await tx.store.getAll();
+          for (let localBook of localBooks) {
+            if (!serverBookIds.has(localBook.id)) {
+              await tx.store.delete(localBook.id);
             }
           }
           await tx.done;
@@ -39,21 +74,30 @@ export default function Library() {
         const loadedBooks = await getBooks();
         const sortedBooks = loadedBooks.sort((a, b) => b.dateAdded - a.dateAdded);
 
-        // Fetch remote progress for each book
+        const localDb = await initDB();
+        const audioTx = localDb.transaction('audio_files', 'readonly');
+        
+        // Fetch remote progress and audio presence for each book
         const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
         const booksWithRemoteProgress = await Promise.all(sortedBooks.map(async (book) => {
+          let updatedBook = { ...book };
           try {
+            const hasAudioFile = await audioTx.objectStore('audio_files').getKey(book.id);
+            if (hasAudioFile) {
+              updatedBook.hasAudio = true;
+            }
+
             const res = await fetchWithAuth(`${API_URL}/progress/${book.id}`);
             if (res.ok) {
               const progressData = await res.json();
               if (progressData.progress_ms != null && progressData.progress_ms > 0) {
-                return { ...book, progress: progressData.progress_ms };
+                updatedBook.progress = progressData.progress_ms;
               }
             }
           } catch (e) {
-            console.error("Failed to fetch remote progress for book", book.id, e);
+            console.error("Failed to fetch data for book", book.id, e);
           }
-          return book;
+          return updatedBook;
         }));
 
         setBooks(booksWithRemoteProgress);
@@ -70,6 +114,13 @@ export default function Library() {
     if (window.confirm("Are you sure you want to delete this book?")) {
       await deleteBook(bookId);
       setBooks(books.filter(b => b.id !== bookId));
+      
+      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+      try {
+        await fetchWithAuth(`${API_URL}/books/${bookId}`, { method: 'DELETE' });
+      } catch (e) {
+        console.error("Failed to delete book from server", e);
+      }
     }
   };
 
@@ -77,48 +128,23 @@ export default function Library() {
     setBooks(books.map(b => b.id === bookId ? { ...b, title, author } : b));
   };
 
+  const handleFavoriteChange = (bookId: string, isFavorite: boolean) => {
+    setBooks(books.map(b => b.id === bookId ? { ...b, isFavorite } : b));
+  };
+
   const filteredBooks = books.filter(b => {
     if (activeFilter === 'All Books') return true;
-    if (activeFilter === 'In Progress') return b.progress && b.progress > 0;
-    if (activeFilter === 'To Read') return !b.progress;
-    // other filters as placeholder
+    if (activeFilter === 'In Progress') return b.progress > 0 && (!b.durationMs || b.progress < b.durationMs * 0.95);
+    if (activeFilter === 'To Read') return !b.progress || b.progress === 0;
+    if (activeFilter === 'Completed') return b.durationMs && b.progress >= b.durationMs * 0.95;
+    if (activeFilter === 'Favorites') return b.isFavorite;
     return true;
   });
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', backgroundColor: 'var(--bg-primary)' }}>
       {/* Sidebar */}
-      <aside style={{ width: '260px', borderRight: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', backgroundColor: 'var(--bg-secondary)', padding: '1.5rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '3rem' }}>
-          <div style={{ width: '32px', height: '32px', background: 'var(--accent-primary)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <BookOpen size={20} style={{ color: 'white' }} />
-          </div>
-          <span style={{ fontSize: '1.25rem', fontWeight: 700, letterSpacing: '-0.5px' }}>ReadAlong</span>
-        </div>
-
-        <nav style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', flex: 1 }}>
-          <a href="#" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.75rem 1rem', borderRadius: '8px', backgroundColor: 'var(--accent-primary)', color: 'white', textDecoration: 'none', fontWeight: 500 }}>
-            <LibraryIcon size={20} /> My Library
-          </a>
-          <a href="#" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.75rem 1rem', borderRadius: '8px', color: 'var(--text-secondary)', textDecoration: 'none', fontWeight: 500 }}>
-            <Compass size={20} /> Discover
-          </a>
-          <a href="#" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.75rem 1rem', borderRadius: '8px', color: 'var(--text-secondary)', textDecoration: 'none', fontWeight: 500 }}>
-            <Clock size={20} /> Recent Activities
-          </a>
-        </nav>
-
-        {/* User Profile Card Pinned at Bottom */}
-        <Link to="/profile" style={{ padding: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '1rem', marginTop: 'auto', textDecoration: 'none', color: 'inherit' }}>
-          <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent-light), var(--accent-primary))', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 'bold' }}>
-            {user?.email?.charAt(0).toUpperCase()}
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>{user?.email?.split('@')[0]}</span>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Premium Member</span>
-          </div>
-        </Link>
-      </aside>
+      <Sidebar />
 
       {/* Main Content Area */}
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
@@ -173,7 +199,7 @@ export default function Library() {
                 {/* Persistent Add Book Tile */}
                 <Link to="/import" style={{ textDecoration: 'none' }}>
                   <div style={{
-                    height: '100%', minHeight: '360px', borderRadius: '16px', border: '2px dashed var(--border-color)',
+                    height: '100%', minHeight: '400px', borderRadius: '16px', border: '2px dashed var(--border-color)',
                     display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                     padding: '2rem', textAlign: 'center', cursor: 'pointer', color: 'var(--text-secondary)',
                     transition: 'all 0.2s ease', backgroundColor: 'var(--bg-secondary)'
@@ -192,6 +218,7 @@ export default function Library() {
                     book={book}
                     onDelete={handleDelete}
                     onUpdate={handleUpdateMeta}
+                    onFavoriteChange={handleFavoriteChange}
                   />
                 ))}
               </div>

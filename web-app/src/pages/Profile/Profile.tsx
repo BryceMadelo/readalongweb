@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { getStats } from '../../storage/db';
 import { fetchWithAuth } from '../../utils/api';
+import { Link } from 'react-router-dom';
+import { ArrowLeft } from 'lucide-react';
 
 export default function Profile() {
   const { user, logout } = useAuth();
@@ -59,6 +61,9 @@ export default function Profile() {
 
   return (
     <div style={{ padding: '2rem', maxWidth: '1000px', margin: '0 auto' }}>
+      <Link to="/" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', textDecoration: 'none', color: 'var(--text-secondary)', marginBottom: '2rem', fontWeight: 500 }}>
+        <ArrowLeft size={16} /> Back to Library
+      </Link>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
           <div style={{ width: '80px', height: '80px', borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent-primary) 0%, #ff8a00 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: '2rem', fontWeight: 'bold' }}>
@@ -83,7 +88,7 @@ export default function Profile() {
             <div style={{ display: 'flex', gap: '1rem' }}>
               <div style={{ flex: 1, background: 'var(--bg-primary)', padding: '1.5rem', borderRadius: '8px', textAlign: 'center' }}>
                 <div style={{ fontSize: '2.5rem', fontWeight: 700, color: 'var(--accent-primary)' }}>{stats.booksRead}</div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '1px' }}>Books Read</div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '1px' }}>Books in Library</div>
               </div>
               <div style={{ flex: 1, background: 'var(--bg-primary)', padding: '1.5rem', borderRadius: '8px', textAlign: 'center' }}>
                 <div style={{ fontSize: '2.5rem', fontWeight: 700, color: 'var(--accent-primary)' }}>{stats.hoursListened}</div>

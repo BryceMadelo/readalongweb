@@ -20,6 +20,9 @@ export default function Reader() {
   const [audioUrl, setAudioUrl] = useState<string>('');
   const [images, setImages] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
+  const [isScrollReady, setIsScrollReady] = useState(false);
+  
+  const isPlayingRef = useRef(false);
   
   const [activeParagraphIndex, setActiveParagraphIndex] = useState<number | null>(null);
   const [initialScrollIndex, setInitialScrollIndex] = useState(0);
@@ -89,10 +92,11 @@ export default function Reader() {
           setMeta(loadedMeta);
           setParagraphs(data.paragraphs);
           
-          if (data.audioBlob) {
-            const url = URL.createObjectURL(data.audioBlob);
-            objectUrlsRef.current.push(url);
-            setAudioUrl(url);
+          if (data.hasAudio) {
+            import('../../utils/api').then(({ getApiToken }) => {
+              const token = getApiToken();
+              setAudioUrl(`${API_URL}/books/${id}/audio?token=${token}`);
+            });
           }
           
           if (data.images) {
@@ -123,18 +127,93 @@ export default function Reader() {
             }
           });
 
-          // Restore last TTS/reading position from localStorage
-          const savedIdx = localStorage.getItem(`tts_progress_${id}`);
-          if (savedIdx !== null) {
-            const idx = parseInt(savedIdx, 10);
-            if (!isNaN(idx) && idx > 0 && idx < data.paragraphs.length) {
-              setActiveParagraphIndex(idx);
-              setInitialScrollIndex(idx);
+          // Determine the correct starting paragraph index
+          let startingIdx = 0;
+
+          // 1. PRIMARY: Try audio progress via sync engine (source of truth for audiobooks)
+          if (loadedMeta.progress > 0 && syncEngineRef.current) {
+            const pId = syncEngineRef.current.get_active_paragraph(loadedMeta.progress);
+            if (pId) {
+              const idx = idToIndexMap.current.get(pId);
+              if (idx !== undefined) {
+                startingIdx = idx;
+              }
             }
           }
+
+          // 2. FALLBACK: Restore from localStorage (paragraph index — always saved on scroll)
+          if (startingIdx === 0) {
+            const savedIdx = localStorage.getItem(`tts_progress_${id}`);
+            if (savedIdx !== null) {
+              const idx = parseInt(savedIdx, 10);
+              if (!isNaN(idx) && idx > 0 && idx < data.paragraphs.length) {
+                startingIdx = idx;
+              }
+            }
+          }
+
+          // 3. FALLBACK: For text-only books, use raw progress as paragraph index
+          if (startingIdx === 0 && !data.hasAudio && loadedMeta.progress > 0) {
+            startingIdx = Math.floor(loadedMeta.progress);
+          }
+
+          console.log('[Reader] Restoring scroll position to paragraph', startingIdx, '(localStorage:', savedIdx, ', dbProgress:', loadedMeta.progress, ')');
+
+          if (startingIdx > 0 && startingIdx < data.paragraphs.length) {
+            setActiveParagraphIndex(startingIdx);
+            setInitialScrollIndex(startingIdx);
+            
+            // Map the scrolled paragraph back to an audio timestamp so the Player starts correctly
+            if (data.syncMap && data.syncMap.length > 0) {
+              let targetMs: number | undefined;
+              
+              // FIRST: Check if the exact database progress matches our current scroll paragraph.
+              // If it does, use the database progress so we don't lose the exact sub-paragraph position!
+              if (loadedMeta.progress > 0 && syncEngineRef.current) {
+                const pId = syncEngineRef.current.get_active_paragraph(loadedMeta.progress);
+                if (pId) {
+                  const pIdx = idToIndexMap.current.get(pId);
+                  if (pIdx === startingIdx) {
+                    targetMs = loadedMeta.progress;
+                    console.log('[Reader] Preserving exact dbProgress because it matches scroll paragraph:', targetMs);
+                  }
+                }
+              }
+
+              // IF IT DOESN'T MATCH (e.g. user manually scrolled away before closing), 
+              // snap to the beginning of the newly scrolled paragraph!
+              if (targetMs === undefined) {
+                for (let i = startingIdx; i >= 0; i--) {
+                  const pId = data.paragraphs[i].id;
+                  const point = data.syncMap.find(p => p.paragraph_id === pId);
+                  if (point && point.timestamp_ms !== undefined) {
+                    targetMs = point.timestamp_ms;
+                    console.log('[Reader] Snapping audio to paragraph start:', targetMs);
+                    break;
+                  }
+                }
+              }
+
+              if (targetMs !== undefined) {
+                setSeekToMs(targetMs);
+                latestTimeRef.current = targetMs;
+                initializedTimeRef.current = true; // prevent the other useEffect from overwriting it
+              }
+            }
+            
+            // Force Virtuoso to actually scroll to this item, because initialTopMostItemIndex is notoriously buggy with dynamic heights
+            setTimeout(() => {
+              if (virtuosoRef.current) {
+                virtuosoRef.current.scrollToIndex({ index: startingIdx, align: 'start' });
+              }
+            }, 150);
+          }
+          // Signal that we've determined the starting index — Virtuoso can now mount
+          setIsScrollReady(true);
         }
       } catch (e) {
         console.error("Failed to load book:", e);
+        setIsScrollReady(true); // still allow mount even on error
       } finally {
         setIsLoading(false);
       }
@@ -147,10 +226,11 @@ export default function Reader() {
       // Cancel any active TTS on unmount
       if (ttsSessionRef.current) ttsSessionRef.current.cancelled = true;
       window.speechSynthesis.cancel();
-      // Save progress on unmount
+      // Save audio time progress on unmount (only if audio was actually playing)
       if (id && latestTimeRef.current > 0) {
         updateBookProgress(id, latestTimeRef.current).catch(console.error);
       }
+      // Note: paragraph index is already saved to localStorage via rangeChanged
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
@@ -242,8 +322,9 @@ export default function Reader() {
     const paragraphId = paragraphIdMap.current.get(index);
     if (paragraphId) {
       const point = syncPoints.find(p => p.paragraph_id === paragraphId);
-      if (point) {
+      if (point && point.timestamp_ms !== undefined) {
         setSeekToMs(point.timestamp_ms);
+        latestTimeRef.current = point.timestamp_ms;
         setActiveParagraphIndex(index);
       }
     }
@@ -460,11 +541,32 @@ export default function Reader() {
         {/* Reader Scroller */}
         <div style={{ flex: 1, padding: '2rem 1rem 0 1rem', overflow: 'hidden' }}>
           <div style={getReaderStyles()}>
-            <Virtuoso
+            {paragraphs.length > 0 && isScrollReady ? (
+              <Virtuoso
               ref={virtuosoRef}
               data={paragraphs}
               style={{ height: '100%' }}
               initialTopMostItemIndex={initialScrollIndex}
+              rangeChanged={(range) => {
+                if (id && range.startIndex > 0 && paragraphs.length > 0) {
+                  // Only update localStorage from scrolling if the active paragraph is NO LONGER on screen!
+                  // If they are still looking at the active paragraph, don't let the topmost paragraph (startIndex) 
+                  // falsely drag their saved position backwards.
+                  const isVisible = activeParagraphIndex !== null && 
+                                   activeParagraphIndex >= range.startIndex && 
+                                   activeParagraphIndex <= range.endIndex;
+                  
+                  if (!isVisible && !isPlayingRef.current) {
+                    localStorage.setItem(`tts_progress_${id}`, range.startIndex.toString());
+                  }
+                  
+                  // Keep global time progress in sync with manual scrolling ONLY for text-only books
+                  // If there is audio, latestTimeRef MUST strictly track the audio player's time.
+                  if (!audioUrl && syncPoints.length === 0) {
+                    latestTimeRef.current = range.startIndex;
+                  }
+                }
+              }}
               itemContent={(index, block) => {
                 const isActive = index === activeParagraphIndex;
                 
@@ -534,6 +636,11 @@ export default function Reader() {
                 );
               }}
             />
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-secondary)' }}>
+                Loading book content...
+              </div>
+            )}
           </div>
         </div>
 
@@ -546,6 +653,8 @@ export default function Reader() {
               seekToMs={seekToMs}
               bookTitle={meta.title}
               bookCover={meta.coverImage}
+              onPlay={() => isPlayingRef.current = true}
+              onPause={() => isPlayingRef.current = false}
             />
           </div>
         )}

@@ -41,3 +41,9 @@ export async function getAudioBlob(bookId: string): Promise<Blob> {
   if (!res.ok) throw new Error('Failed to download audio');
   return res.blob();
 }
+
+export async function getSyncMap(bookId: string): Promise<any[]> {
+  const res = await fetchWithAuth(`http://localhost:3000/api/sync_map/${bookId}`);
+  if (!res.ok) throw new Error('Failed to download sync map');
+  return res.json();
+}

@@ -2,7 +2,7 @@ import { useState, useRef, type DragEvent } from 'react';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { load_epub_paragraphs, load_epub_images } from 'readalong-wasm';
 import { Upload, ArrowLeft, CheckCircle, X, Plus, Book, Music } from 'lucide-react';
-import { saveBook, type ContentBlock, getBookData } from '../../storage/db';
+import { saveBook, type ContentBlock, getBookData, addHistory } from '../../storage/db';
 import { useAlignment } from '../../context/AlignmentContext';
 import { fetchWithAuth } from '../../utils/api';
 
@@ -91,6 +91,7 @@ export default function Import() {
         );
 
         startJob({ bookId: addAudioBookId, bookTitle: bookData.meta.title, progressMsg: 'Aligning text and audio...', status: 'processing' });
+        await addHistory('align', `Added audio to ${bookData.meta.title}`, addAudioBookId);
 
         setSuccess(true);
         setTimeout(() => {
@@ -138,7 +139,23 @@ export default function Import() {
         processedImages[path] = data;
       }
 
+      let coverImage = undefined;
+      for (const [path, data] of Object.entries(processedImages)) {
+        if (path.toLowerCase().includes('cover')) {
+          const type = path.toLowerCase().endsWith('png') ? 'image/png' : 'image/jpeg';
+          const blob = new Blob([data], { type });
+          const reader = new FileReader();
+          coverImage = await new Promise<string>((resolve) => {
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.readAsDataURL(blob);
+          });
+          break;
+        }
+      }
+
       const formData = new FormData();
+      formData.append('title', title);
+      formData.append('author', 'Unknown Author');
       formData.append('epub', epubFile);
       if (audioFile) {
         formData.append('audio', audioFile);
@@ -156,13 +173,28 @@ export default function Import() {
 
       const { book_id: serverBookId } = await response.json();
 
+      if (coverImage) {
+        try {
+          const coverFormData = new FormData();
+          const coverBlob = await (await fetch(coverImage)).blob();
+          coverFormData.append('cover', coverBlob, 'cover.jpg');
+          await fetchWithAuth(`${API_URL}/books/${serverBookId}/cover`, {
+              method: 'POST',
+              body: coverFormData
+          });
+        } catch (e) {
+          console.error("Failed to upload cover to server", e);
+        }
+      }
+
       await saveBook(
         {
           id: serverBookId,
           title: title,
           author: "Unknown Author",
           dateAdded: Date.now(),
-          progress: 0
+          progress: 0,
+          coverImage: coverImage
         },
         validBlocks,
         audioFile ?? undefined,
@@ -172,8 +204,11 @@ export default function Import() {
 
       if (audioFile) {
         startJob({ bookId: serverBookId, bookTitle: title, progressMsg: 'Aligning text and audio...', status: 'processing' });
+        await addHistory('import', `Imported ${title} with audio`, serverBookId);
+      } else {
+        await addHistory('import', `Imported ${title}`, serverBookId);
       }
-
+      
       setSuccess(true);
       setTimeout(() => {
         navigate('/');

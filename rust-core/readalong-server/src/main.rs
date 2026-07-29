@@ -26,15 +26,23 @@ mod queue;
 pub struct AppState {
     pub db: std::sync::Arc<std::sync::Mutex<db::LibraryDb>>,
     pub queue: std::sync::Arc<queue::JobQueue>,
+    pub alignment_lock: std::sync::Arc<std::sync::Mutex<()>>,
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BookMeta {
     pub id: String,
     pub title: String,
     pub author: String,
     pub date_added: i64,
     pub progress: f64,
+    pub is_favorite: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cover_image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<f64>,
+    pub has_audio: bool,
 }
 
 async fn handle_get_books(
@@ -55,6 +63,7 @@ async fn handle_download_epub(
     Extension(user_id): Extension<auth::UserId>,
     State(app_state): State<AppState>,
     AxumPath(book_id): AxumPath<String>,
+    req: axum::extract::Request,
 ) -> impl IntoResponse {
     let epub_path_str = {
         let db_lock = app_state.db.lock().unwrap();
@@ -64,14 +73,9 @@ async fn handle_download_epub(
         }
     };
 
-    match File::open(&epub_path_str).await {
-        Ok(file) => {
-            let stream = ReaderStream::new(file);
-            let body = Body::from_stream(stream);
-            let headers = [(header::CONTENT_TYPE, "application/epub+zip")];
-            (StatusCode::OK, headers, body).into_response()
-        }
-        Err(_) => (StatusCode::NOT_FOUND, "EPUB file not found").into_response(),
+    match tower::ServiceExt::oneshot(tower_http::services::ServeFile::new(&epub_path_str), req).await {
+        Ok(res) => res.into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Error serving file").into_response(),
     }
 }
 
@@ -79,6 +83,7 @@ async fn handle_download_audio(
     Extension(user_id): Extension<auth::UserId>,
     State(app_state): State<AppState>,
     AxumPath(book_id): AxumPath<String>,
+    req: axum::extract::Request,
 ) -> impl IntoResponse {
     let audio_path_str = {
         let db_lock = app_state.db.lock().unwrap();
@@ -92,14 +97,9 @@ async fn handle_download_audio(
         return (StatusCode::NOT_FOUND, "No audio file for this book").into_response();
     }
 
-    match File::open(&audio_path_str).await {
-        Ok(file) => {
-            let stream = ReaderStream::new(file);
-            let body = Body::from_stream(stream);
-            let headers = [(header::CONTENT_TYPE, "audio/mpeg")];
-            (StatusCode::OK, headers, body).into_response()
-        }
-        Err(_) => (StatusCode::NOT_FOUND, "Audio file not found").into_response(),
+    match tower::ServiceExt::oneshot(tower_http::services::ServeFile::new(&audio_path_str), req).await {
+        Ok(res) => res.into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Error serving file").into_response(),
     }
 }
 
@@ -129,6 +129,7 @@ async fn main() {
     let state = AppState {
         db: db.clone(),
         queue,
+        alignment_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
     };
 
     let auth_routes = Router::new()
@@ -139,16 +140,19 @@ async fn main() {
 
     let protected_api_routes = Router::new()
         .route("/books", get(handle_get_books))
+        .route("/books/:book_id", axum::routing::delete(import::handle_delete_book))
         .route("/books/:book_id/epub", get(handle_download_epub))
         .route("/books/:book_id/audio", get(handle_download_audio))
         .route("/import", post(import::handle_import))
         .route("/add_audio/:book_id", post(import::handle_add_audio))
         .route("/status/:book_id", get(import::handle_status))
-        .route("/sync_map/:book_id", post(import::handle_update_sync_map))
+        .route("/sync_map/:book_id", get(import::handle_get_sync_map).post(import::handle_update_sync_map))
         .route("/pause/:book_id", post(import::handle_pause))
         .route("/resume/:book_id", post(import::handle_resume))
         .route("/edit/:book_id", post(import::handle_edit))
         .route("/progress/:book_id", get(progress::get_progress).post(progress::update_progress))
+        .route("/books/:book_id/favorite", post(import::handle_favorite))
+        .route("/books/:book_id/cover", post(import::handle_upload_cover).get(import::handle_get_cover))
         .layer(middleware::from_fn(auth::auth_middleware));
 
     let app = Router::new()
@@ -157,6 +161,13 @@ async fn main() {
         .nest("/api", protected_api_routes)
         .with_state(state)
         .layer(CorsLayer::permissive())
+        .layer(axum::middleware::map_response(|mut res: axum::response::Response| async {
+            res.headers_mut().insert(
+                axum::http::header::HeaderName::from_static("cross-origin-resource-policy"),
+                axum::http::header::HeaderValue::from_static("cross-origin"),
+            );
+            res
+        }))
         .layer(axum::extract::DefaultBodyLimit::max(4 * 1024 * 1024 * 1024));
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));

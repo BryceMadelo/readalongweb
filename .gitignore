@@ -16,6 +16,13 @@ yarn-error.log*
 target/
 **/*.rs.bk
 
+# Databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
 # React Native / Expo (Mobile)
 .expo/
 .expo-shared/
