@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { BookOpen, Star, Trash2, Edit2, Play, Pause, CheckCircle, Music, Lock, Clock, FileAudio } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { BookOpen, Star, Trash2, Edit2, Play, Pause, CheckCircle, Lock, Clock, FileAudio } from 'lucide-react';
 import { useAlignment } from '../../context/AlignmentContext';
 import { type BookMeta, updateBookMeta, toggleFavorite, saveBook, getBookData, addHistory } from '../../storage/db';
 import { fetchWithAuth, getApiToken } from '../../utils/api';
@@ -20,7 +20,7 @@ export function BookCard({ book, onDelete, onUpdate, onFavoriteChange }: BookCar
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(book.title);
   const [editAuthor, setEditAuthor] = useState(book.author);
-  const [isUploadingAudio, setIsUploadingAudio] = useState(false);
+
   
   // Use state for favorite to update instantly
   const [isFavorite, setIsFavorite] = useState(book.isFavorite || false);
@@ -94,7 +94,7 @@ export function BookCard({ book, onDelete, onUpdate, onFavoriteChange }: BookCar
     const file = e.target.files?.[0];
     if (!file) return;
     
-    setIsUploadingAudio(true);
+
     try {
       // 1. Send to server
       const formData = new FormData();
@@ -127,8 +127,6 @@ export function BookCard({ book, onDelete, onUpdate, onFavoriteChange }: BookCar
     } catch (err) {
       console.error(err);
       alert("Error uploading audio.");
-    } finally {
-      setIsUploadingAudio(false);
     }
   };
 

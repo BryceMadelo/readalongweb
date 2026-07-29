@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { BookOpen, Library as LibraryIcon, Compass, Clock } from 'lucide-react';
+import { BookOpen, Library as LibraryIcon, Clock } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export function Sidebar() {

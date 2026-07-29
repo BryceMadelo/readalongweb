@@ -177,10 +177,10 @@ export async function getBookData(bookId: string) {
   const db = await initDB();
   
   // Read existing data
-  let tx = db.transaction(['books', 'paragraphs', 'audio_files', 'sync_maps', 'epub_images'], 'readonly');
+  const tx = db.transaction(['books', 'paragraphs', 'audio_files', 'sync_maps', 'epub_images'], 'readonly');
   const meta = await tx.objectStore('books').get(bookId);
   const pData = await tx.objectStore('paragraphs').get(bookId);
-  const aData = await tx.objectStore('audio_files').get(bookId);
+
   const sData = await tx.objectStore('sync_maps').get(bookId);
   const imgData = await tx.objectStore('epub_images').get(bookId);
   await tx.done;
@@ -190,15 +190,10 @@ export async function getBookData(bookId: string) {
 
   // We no longer download the audio blob into IndexedDB.
   // Instead, the Reader component will stream the audio directly from the backend.
-  let hasAudio = false;
-  if (meta && (meta as any).hasAudio) {
-      hasAudio = true;
-  } else {
-      hasAudio = true;
-  }
+  const hasAudio = Boolean(meta && (meta as BookMeta).hasAudio);
 
   let paragraphs = pData?.data || [];
-  let images = imgData?.images || {};
+  const images = imgData?.images || {};
 
   if (paragraphs.length === 0) {
     try {
@@ -209,9 +204,9 @@ export async function getBookData(bookId: string) {
       
       const epubData = load_epub_paragraphs(bytes);
       
-      let writeTx = db.transaction(['paragraphs', 'epub_images'], 'readwrite');
+      const writeTx = db.transaction(['paragraphs', 'epub_images'], 'readwrite');
       if (!epubData.error) {
-        paragraphs = epubData.blocks.filter((b: any) => 
+        paragraphs = epubData.blocks.filter((b: ContentBlock) => 
           b.tag === 'img' || (b.text && b.text.trim().length > 0)
         );
         await writeTx.objectStore('paragraphs').put({ bookId, data: paragraphs });
@@ -236,7 +231,7 @@ export async function getBookData(bookId: string) {
     try {
       syncMap = await getSyncMap(bookId);
       if (syncMap.length > 0) {
-        let writeTx = db.transaction(['sync_maps'], 'readwrite');
+        const writeTx = db.transaction(['sync_maps'], 'readwrite');
         await writeTx.objectStore('sync_maps').put({ bookId, points: syncMap });
         await writeTx.done;
       }
@@ -269,7 +264,6 @@ export async function deleteBook(bookId: string) {
 
 export async function getStats() {
   const books = await getBooks();
-  let booksRead = 0;
   let hoursListened = 0;
 
   for (const book of books) {
@@ -284,9 +278,9 @@ export async function getStats() {
       const lastPoint = sData.points[sData.points.length - 1];
       const totalMs = lastPoint.timestamp_ms;
       if (totalMs > 0) {
-        if (book.progress >= totalMs * 0.95) {
-          booksRead += 1;
-        }
+        // if (book.progress >= totalMs * 0.95) {
+        //   booksRead += 1;
+        // }
       }
     }
   }

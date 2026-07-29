@@ -143,7 +143,7 @@ export default function Import() {
       for (const [path, data] of Object.entries(processedImages)) {
         if (path.toLowerCase().includes('cover')) {
           const type = path.toLowerCase().endsWith('png') ? 'image/png' : 'image/jpeg';
-          const blob = new Blob([data], { type });
+          const blob = new Blob([data as unknown as BlobPart], { type });
           const reader = new FileReader();
           coverImage = await new Promise<string>((resolve) => {
             reader.onloadend = () => resolve(reader.result as string);

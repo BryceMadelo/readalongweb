@@ -9,7 +9,6 @@ export default function Align() {
   const { id } = useParams<{ id: string }>();
   const [meta, setMeta] = useState<BookMeta | null>(null);
   const [blocks, setBlocks] = useState<ContentBlock[]>([]);
-  const [audioBlob, setAudioBlob] = useState<Blob | File | null>(null);
   const [syncPoints, setSyncPoints] = useState<SyncPoint[]>([]);
   const [images, setImages] = useState<Record<string, Uint8Array>>({});
   const [isLoading, setIsLoading] = useState(true);
@@ -37,13 +36,19 @@ export default function Align() {
       if (!id) return;
       try {
         const data = await getBookData(id);
-        if (data.meta && data.audioBlob) {
+        if (data.meta) {
           setMeta(data.meta);
           setBlocks(data.paragraphs);
-          setAudioBlob(data.audioBlob);
-          setAudioUrl(URL.createObjectURL(data.audioBlob));
           setSyncPoints(data.syncMap || []);
           setImages(data.images || {});
+          
+          if (data.hasAudio) {
+            import('../../utils/api').then(({ getApiToken }) => {
+              const token = getApiToken();
+              const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+              setAudioUrl(`${API_URL}/books/${id}/audio?token=${token}`);
+            });
+          }
           
           if (data.syncMap && data.syncMap.length > 0) {
              setActiveTextIndex(data.syncMap.length);
@@ -56,9 +61,6 @@ export default function Align() {
       }
     }
     load();
-    return () => {
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
-    };
   }, [id]);
 
   const stampCurrentTime = () => {
@@ -138,7 +140,7 @@ export default function Align() {
   }, [activeTextIndex, filteredTextBlocks]); // Re-bind on index change
 
   const handleSave = async () => {
-    if (meta && audioBlob) {
+    if (meta) {
       // Validate with WASM SyncEngine before saving
       const sorted = [...syncPoints].sort((a, b) => a.timestamp_ms - b.timestamp_ms);
       try {
@@ -170,7 +172,7 @@ export default function Align() {
           alert("Failed to sync with the backend server, but saving locally.");
       }
 
-      await saveBook(meta, blocks, audioBlob, syncPoints, images);
+      await saveBook(meta, blocks, undefined, syncPoints, images);
       alert("Sync map saved successfully!");
     }
   };

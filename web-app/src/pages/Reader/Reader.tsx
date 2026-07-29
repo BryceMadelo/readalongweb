@@ -142,8 +142,9 @@ export default function Reader() {
           }
 
           // 2. FALLBACK: Restore from localStorage (paragraph index — always saved on scroll)
+          let savedIdx: string | null = null;
           if (startingIdx === 0) {
-            const savedIdx = localStorage.getItem(`tts_progress_${id}`);
+            savedIdx = localStorage.getItem(`tts_progress_${id}`);
             if (savedIdx !== null) {
               const idx = parseInt(savedIdx, 10);
               if (!isNaN(idx) && idx > 0 && idx < data.paragraphs.length) {

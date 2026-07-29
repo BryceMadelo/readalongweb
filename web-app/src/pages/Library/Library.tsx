@@ -1,15 +1,15 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BookOpen, Plus, Search, Library as LibraryIcon, Compass, Clock, X } from 'lucide-react';
+import { Plus, Search, X } from 'lucide-react';
 import { getBooks, deleteBook, type BookMeta, initDB } from '../../storage/db';
 import { BookCard } from './BookCard';
 import { Sidebar } from '../../components/Sidebar';
 import { useAlignment } from '../../context/AlignmentContext';
 import { fetchWithAuth, fetchBooks } from '../../utils/api';
-import { useAuth } from '../../context/AuthContext';
+
 
 export default function Library() {
-  const { user } = useAuth();
+
   const { activeJob } = useAlignment();
   const [books, setBooks] = useState<BookMeta[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -26,9 +26,9 @@ export default function Library() {
           const serverBooks = await fetchBooks();
           const db = await initDB();
           const tx = db.transaction('books', 'readwrite');
-          const serverBookIds = new Set(serverBooks.map((b: any) => b.id));
+          const serverBookIds = new Set(serverBooks.map((b: BookMeta) => b.id));
           
-          for (let book of serverBooks) {
+          for (const book of serverBooks) {
             // Handle if backend returned snake_case 'date_added' instead of 'dateAdded'
             if ('date_added' in book && !('dateAdded' in book)) {
                book.dateAdded = book.date_added;
@@ -61,7 +61,7 @@ export default function Library() {
 
           // Delete any local books that no longer exist on the server
           const localBooks = await tx.store.getAll();
-          for (let localBook of localBooks) {
+          for (const localBook of localBooks) {
             if (!serverBookIds.has(localBook.id)) {
               await tx.store.delete(localBook.id);
             }
@@ -80,7 +80,7 @@ export default function Library() {
         // Fetch remote progress and audio presence for each book
         const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
         const booksWithRemoteProgress = await Promise.all(sortedBooks.map(async (book) => {
-          let updatedBook = { ...book };
+          const updatedBook = { ...book };
           try {
             const hasAudioFile = await audioTx.objectStore('audio_files').getKey(book.id);
             if (hasAudioFile) {
