@@ -150,7 +150,7 @@ export async function updateBookProgress(bookId: string, progress: number) {
   await tx.done;
 
   // Sync to server
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+  const API_URL = import.meta.env.VITE_API_URL || '/api';
   try {
     const token = localStorage.getItem('readalong_api_token');
     if (token) {

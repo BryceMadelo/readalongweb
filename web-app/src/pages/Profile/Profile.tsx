@@ -33,7 +33,7 @@ export default function Profile() {
     }
 
     try {
-      const res = await fetchWithAuth('http://localhost:3000/api/auth/update_profile', {
+      const res = await fetchWithAuth('/api/auth/update_profile', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -37,7 +37,7 @@ export function BookCard({ book, onDelete, onUpdate, onFavoriteChange }: BookCar
   // Ready to read if: it's fully aligned/text-only (not aligning) OR it is aligning but has processed at least 10 minutes
   const isReadyToRead = !isAligningThis || (isAligningThis && pMin >= 10);
 
-  const estimatedDuration = book.durationMs || (job ? job.totalMin * 60000 : undefined);
+  const estimatedDuration = book.durationMs || (job?.totalMin ? job.totalMin * 60000 : undefined);
   const readingProgressPct = estimatedDuration ? Math.min(100, Math.round((book.progress / estimatedDuration) * 100)) : 0;
   const audioSyncPct = tMin > 0 ? Math.min(100, Math.round((pMin / tMin) * 100)) : (isAligningThis ? 0 : 100);
 
@@ -49,7 +49,7 @@ export function BookCard({ book, onDelete, onUpdate, onFavoriteChange }: BookCar
     if (editTitle !== book.title || editAuthor !== book.author) {
       await updateBookMeta(book.id, editTitle, editAuthor);
       
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+      const API_URL = import.meta.env.VITE_API_URL || '/api';
       try {
         await fetchWithAuth(`${API_URL}/edit/${book.id}`, {
           method: 'POST',
@@ -70,7 +70,7 @@ export function BookCard({ book, onDelete, onUpdate, onFavoriteChange }: BookCar
     const newFav = await toggleFavorite(book.id);
     setIsFavorite(newFav);
     
-    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+    const API_URL = import.meta.env.VITE_API_URL || '/api';
     try {
       await fetchWithAuth(`${API_URL}/books/${book.id}/favorite`, {
         method: 'POST',
@@ -99,7 +99,7 @@ export function BookCard({ book, onDelete, onUpdate, onFavoriteChange }: BookCar
       // 1. Send to server
       const formData = new FormData();
       formData.append('audio', file);
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+      const API_URL = import.meta.env.VITE_API_URL || '/api';
       const res = await fetchWithAuth(`${API_URL}/add_audio/${book.id}`, {
         method: 'POST',
         body: formData,
@@ -111,6 +111,7 @@ export function BookCard({ book, onDelete, onUpdate, onFavoriteChange }: BookCar
       
       // 2. Save locally and start job
       const bookData = await getBookData(book.id);
+      if (!bookData.meta) throw new Error("Meta missing");
       await saveBook(
         bookData.meta,
         bookData.paragraphs,
@@ -145,7 +146,7 @@ export function BookCard({ book, onDelete, onUpdate, onFavoriteChange }: BookCar
           position: 'relative',
           overflow: 'hidden',
           background: book.coverImage 
-            ? `url(${book.coverImage.startsWith('/api') ? `${import.meta.env.VITE_API_URL || 'http://localhost:3000/api'}/books/${book.id}/cover?token=${getApiToken()}` : book.coverImage}) center/cover` 
+            ? `url(${book.coverImage.startsWith('/api') ? `${import.meta.env.VITE_API_URL || '/api'}/books/${book.id}/cover?token=${getApiToken()}` : book.coverImage}) center/cover` 
             : 'linear-gradient(135deg, var(--accent-light), var(--accent-primary))'
         }}>
           {!book.coverImage && <BookOpen size={48} style={{ color: 'white', opacity: 0.8 }} />}

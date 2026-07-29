@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Sidebar } from '../../components/Sidebar';
 import { getHistory, type HistoryActivity } from '../../storage/db';
-import { BookOpen, UploadCloud, Settings, Clock, Activity, Settings2, FileAudio } from 'lucide-react';
+import { BookOpen, UploadCloud, Clock, Activity, Settings2, FileAudio } from 'lucide-react';
 
 export default function RecentActivities() {
   const [history, setHistory] = useState<HistoryActivity[]>([]);

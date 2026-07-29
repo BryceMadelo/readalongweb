@@ -34,7 +34,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       try {
-        const res = await fetchWithAuth('http://localhost:3000/api/auth/me');
+        const res = await fetchWithAuth('/api/auth/me');
         if (res.ok) {
           const userData = await res.json();
           setUser(userData);

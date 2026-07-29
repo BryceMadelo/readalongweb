@@ -78,7 +78,7 @@ export default function Library() {
         const audioTx = localDb.transaction('audio_files', 'readonly');
         
         // Fetch remote progress and audio presence for each book
-        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+        const API_URL = import.meta.env.VITE_API_URL || '/api';
         const booksWithRemoteProgress = await Promise.all(sortedBooks.map(async (book) => {
           const updatedBook = { ...book };
           try {
@@ -115,7 +115,7 @@ export default function Library() {
       await deleteBook(bookId);
       setBooks(books.filter(b => b.id !== bookId));
       
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+      const API_URL = import.meta.env.VITE_API_URL || '/api';
       try {
         await fetchWithAuth(`${API_URL}/books/${bookId}`, { method: 'DELETE' });
       } catch (e) {

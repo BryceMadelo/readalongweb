@@ -45,7 +45,7 @@ export default function Align() {
           if (data.hasAudio) {
             import('../../utils/api').then(({ getApiToken }) => {
               const token = getApiToken();
-              const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+              const API_URL = import.meta.env.VITE_API_URL || '/api';
               setAudioUrl(`${API_URL}/books/${id}/audio?token=${token}`);
             });
           }
@@ -157,7 +157,7 @@ export default function Align() {
 
       try {
           // Push to backend server
-          const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+          const API_URL = import.meta.env.VITE_API_URL || '/api';
           const response = await fetchWithAuth(`${API_URL}/sync_map/${meta.id}`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
