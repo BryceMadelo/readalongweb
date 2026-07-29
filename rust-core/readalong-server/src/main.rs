@@ -4,15 +4,14 @@ use axum::{
     middleware,
     extract::{State, Path as AxumPath, Extension},
     response::IntoResponse,
-    http::{StatusCode, header},
+    http::StatusCode,
     Json,
 };
 use serde::Serialize;
 use std::net::SocketAddr;
 use tower_http::cors::CorsLayer;
-use tokio::fs::File;
-use tokio_util::io::ReaderStream;
-use axum::body::Body;
+
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer, key_extractor::SmartIpKeyExtractor};
 
 mod import;
 mod transcribe;
@@ -132,9 +131,25 @@ async fn main() {
         alignment_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
     };
 
+    // Rate limiting configuration for auth routes (e.g., login, signup)
+    // Limits to 5 requests per second per IP, burst size of 10.
+    // We use SmartIpKeyExtractor to get the IP from X-Forwarded-For or CF-Connecting-IP
+    // when running behind a proxy like Cloudflare Tunnel.
+    let governor_conf = std::sync::Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(5)
+            .burst_size(10)
+            .key_extractor(SmartIpKeyExtractor)
+            .finish()
+            .unwrap()
+    );
+
     let auth_routes = Router::new()
         .route("/signup", post(auth::handle_signup))
         .route("/login", post(auth::handle_login))
+        .layer(tower_governor::GovernorLayer {
+            config: governor_conf,
+        })
         .route("/me", get(auth::handle_me).layer(middleware::from_fn(auth::auth_middleware)))
         .route("/update_profile", put(auth::handle_update_profile).layer(middleware::from_fn(auth::auth_middleware)));
 
@@ -155,12 +170,48 @@ async fn main() {
         .route("/books/:book_id/cover", post(import::handle_upload_cover).get(import::handle_get_cover))
         .layer(middleware::from_fn(auth::auth_middleware));
 
+    let mut allowed_origins = vec![
+        "http://localhost:5173".parse::<axum::http::HeaderValue>().unwrap(),
+        "http://localhost:3000".parse::<axum::http::HeaderValue>().unwrap(),
+        "http://127.0.0.1:5173".parse::<axum::http::HeaderValue>().unwrap(),
+        "http://127.0.0.1:3000".parse::<axum::http::HeaderValue>().unwrap(),
+    ];
+
+    if let Ok(domains) = std::env::var("APP_DOMAIN") {
+        for domain in domains.split(',') {
+            let domain = domain.trim();
+            if !domain.is_empty() {
+                // Determine if we need to add a scheme
+                let origin_str = if domain.starts_with("http://") || domain.starts_with("https://") {
+                    domain.to_string()
+                } else {
+                    format!("https://{}", domain)
+                };
+
+                if let Ok(header_value) = origin_str.parse::<axum::http::HeaderValue>() {
+                    allowed_origins.push(header_value);
+                }
+            }
+        }
+    }
+
+    let cors = CorsLayer::new()
+        .allow_origin(allowed_origins)
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(tower_http::cors::Any);
+
+    let api_router = Router::new()
+        .nest("/auth", auth_routes)
+        .merge(protected_api_routes);
+
     let app = Router::new()
-        .route("/", get(|| async { "ReadAlong Server is running" }))
-        .nest("/api/auth", auth_routes)
-        .nest("/api", protected_api_routes)
+        .nest("/api", api_router)
+        .fallback_service(
+            tower_http::services::ServeDir::new("../web-app/dist")
+                .fallback(tower_http::services::ServeFile::new("../web-app/dist/index.html")),
+        )
         .with_state(state)
-        .layer(CorsLayer::permissive())
+        .layer(cors)
         .layer(axum::middleware::map_response(|mut res: axum::response::Response| async {
             res.headers_mut().insert(
                 axum::http::header::HeaderName::from_static("cross-origin-resource-policy"),
@@ -174,5 +225,5 @@ async fn main() {
     tracing::info!("Server listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
 }

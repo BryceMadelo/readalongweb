@@ -21,5 +21,15 @@ services:
               count: all
               capabilities: [gpu]
 
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    depends_on:
+      - readalong-server
+
 volumes:
   readalong_data:
