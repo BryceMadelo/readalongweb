@@ -26,3 +26,4 @@ jsonwebtoken = { version = "11.0.0", features = ["rust_crypto"] }
 bcrypt = "0.19.3"
 chrono = "0.4.45"
 tower = "0.5"
+tower_governor = "0.4"
