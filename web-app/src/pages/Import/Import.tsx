@@ -140,17 +140,23 @@ export default function Import() {
       }
 
       let coverImage = undefined;
-      for (const [path, data] of Object.entries(processedImages)) {
-        if (path.toLowerCase().includes('cover')) {
-          const type = path.toLowerCase().endsWith('png') ? 'image/png' : 'image/jpeg';
-          const blob = new Blob([data as unknown as BlobPart], { type });
-          const reader = new FileReader();
-          coverImage = await new Promise<string>((resolve) => {
-            reader.onloadend = () => resolve(reader.result as string);
-            reader.readAsDataURL(blob);
-          });
-          break;
-        }
+      let coverEntry = Object.entries(processedImages).find(([path]) => path.toLowerCase().includes('cover'));
+      if (!coverEntry) {
+        coverEntry = Object.entries(processedImages).find(([path]) => path.toLowerCase().includes('title'));
+      }
+      if (!coverEntry && Object.keys(processedImages).length > 0) {
+        coverEntry = Object.entries(processedImages)[0];
+      }
+
+      if (coverEntry) {
+        const [path, data] = coverEntry;
+        const type = path.toLowerCase().endsWith('png') ? 'image/png' : 'image/jpeg';
+        const blob = new Blob([data as unknown as BlobPart], { type });
+        const reader = new FileReader();
+        coverImage = await new Promise<string>((resolve) => {
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.readAsDataURL(blob);
+        });
       }
 
       const formData = new FormData();
@@ -356,7 +362,7 @@ export default function Import() {
           }}>
             <input 
               type="file" 
-              accept="audio/*" 
+              accept="audio/*, .m4b, audio/m4b" 
               ref={audioInputRef}
               onChange={(e) => {
                 if (e.target.files && e.target.files.length > 0) {

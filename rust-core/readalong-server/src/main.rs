@@ -1,25 +1,26 @@
 use axum::{
-    routing::{get, post, put},
-    Router,
-    middleware,
-    extract::{State, Path as AxumPath, Extension},
-    response::IntoResponse,
+    Json, Router,
+    extract::{Extension, Path as AxumPath, State},
     http::StatusCode,
-    Json,
+    middleware,
+    response::IntoResponse,
+    routing::{get, post, put},
 };
 use serde::Serialize;
 use std::net::SocketAddr;
 use tower_http::cors::CorsLayer;
 
-use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer, key_extractor::SmartIpKeyExtractor};
+use tower_governor::{
+    GovernorLayer, governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor,
+};
 
-mod import;
-mod transcribe;
 mod align;
-mod db;
 mod auth;
+mod db;
+mod import;
 mod progress;
 mod queue;
+mod transcribe;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -72,7 +73,9 @@ async fn handle_download_epub(
         }
     };
 
-    match tower::ServiceExt::oneshot(tower_http::services::ServeFile::new(&epub_path_str), req).await {
+    match tower::ServiceExt::oneshot(tower_http::services::ServeFile::new(&epub_path_str), req)
+        .await
+    {
         Ok(res) => res.into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Error serving file").into_response(),
     }
@@ -96,7 +99,9 @@ async fn handle_download_audio(
         return (StatusCode::NOT_FOUND, "No audio file for this book").into_response();
     }
 
-    match tower::ServiceExt::oneshot(tower_http::services::ServeFile::new(&audio_path_str), req).await {
+    match tower::ServiceExt::oneshot(tower_http::services::ServeFile::new(&audio_path_str), req)
+        .await
+    {
         Ok(res) => res.into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Error serving file").into_response(),
     }
@@ -106,7 +111,8 @@ async fn handle_download_audio(
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let db_path_str = std::env::var("DB_PATH").unwrap_or_else(|_| "readalong_server.db".to_string());
+    let db_path_str =
+        std::env::var("DB_PATH").unwrap_or_else(|_| "readalong_server.db".to_string());
     let db_path = std::path::Path::new(&db_path_str);
 
     let data_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
@@ -120,7 +126,7 @@ async fn main() {
     }
 
     let db = std::sync::Arc::new(std::sync::Mutex::new(
-        db::LibraryDb::new(db_path).expect("Failed to initialize database")
+        db::LibraryDb::new(db_path).expect("Failed to initialize database"),
     ));
 
     let queue = queue::JobQueue::new(db.clone());
@@ -141,7 +147,7 @@ async fn main() {
             .burst_size(10)
             .key_extractor(SmartIpKeyExtractor)
             .finish()
-            .unwrap()
+            .unwrap(),
     );
 
     let auth_routes = Router::new()
@@ -150,31 +156,62 @@ async fn main() {
         .layer(tower_governor::GovernorLayer {
             config: governor_conf,
         })
-        .route("/me", get(auth::handle_me).layer(middleware::from_fn(auth::auth_middleware)))
-        .route("/update_profile", put(auth::handle_update_profile).layer(middleware::from_fn(auth::auth_middleware)));
+        .route(
+            "/me",
+            get(auth::handle_me).layer(middleware::from_fn(auth::auth_middleware)),
+        )
+        .route(
+            "/update_profile",
+            put(auth::handle_update_profile).layer(middleware::from_fn(auth::auth_middleware)),
+        );
 
     let protected_api_routes = Router::new()
         .route("/books", get(handle_get_books))
-        .route("/books/:book_id", axum::routing::delete(import::handle_delete_book))
+        .route(
+            "/books/:book_id",
+            axum::routing::delete(import::handle_delete_book),
+        )
         .route("/books/:book_id/epub", get(handle_download_epub))
         .route("/books/:book_id/audio", get(handle_download_audio))
+        .route("/books/:book_id/content", get(import::handle_get_content))
+        .route(
+            "/books/:book_id/resource/*asset_path",
+            get(import::handle_get_resource),
+        )
         .route("/import", post(import::handle_import))
         .route("/add_audio/:book_id", post(import::handle_add_audio))
         .route("/status/:book_id", get(import::handle_status))
-        .route("/sync_map/:book_id", get(import::handle_get_sync_map).post(import::handle_update_sync_map))
+        .route(
+            "/sync_map/:book_id",
+            get(import::handle_get_sync_map).post(import::handle_update_sync_map),
+        )
         .route("/pause/:book_id", post(import::handle_pause))
         .route("/resume/:book_id", post(import::handle_resume))
         .route("/edit/:book_id", post(import::handle_edit))
-        .route("/progress/:book_id", get(progress::get_progress).post(progress::update_progress))
+        .route(
+            "/progress/:book_id",
+            get(progress::get_progress).post(progress::update_progress),
+        )
         .route("/books/:book_id/favorite", post(import::handle_favorite))
-        .route("/books/:book_id/cover", post(import::handle_upload_cover).get(import::handle_get_cover))
+        .route(
+            "/books/:book_id/cover",
+            post(import::handle_upload_cover).get(import::handle_get_cover),
+        )
         .layer(middleware::from_fn(auth::auth_middleware));
 
     let mut allowed_origins = vec![
-        "http://localhost:5173".parse::<axum::http::HeaderValue>().unwrap(),
-        "http://localhost:3000".parse::<axum::http::HeaderValue>().unwrap(),
-        "http://127.0.0.1:5173".parse::<axum::http::HeaderValue>().unwrap(),
-        "http://127.0.0.1:3000".parse::<axum::http::HeaderValue>().unwrap(),
+        "http://localhost:5173"
+            .parse::<axum::http::HeaderValue>()
+            .unwrap(),
+        "http://localhost:3000"
+            .parse::<axum::http::HeaderValue>()
+            .unwrap(),
+        "http://127.0.0.1:5173"
+            .parse::<axum::http::HeaderValue>()
+            .unwrap(),
+        "http://127.0.0.1:3000"
+            .parse::<axum::http::HeaderValue>()
+            .unwrap(),
     ];
 
     if let Ok(domains) = std::env::var("APP_DOMAIN") {
@@ -182,7 +219,8 @@ async fn main() {
             let domain = domain.trim();
             if !domain.is_empty() {
                 // Determine if we need to add a scheme
-                let origin_str = if domain.starts_with("http://") || domain.starts_with("https://") {
+                let origin_str = if domain.starts_with("http://") || domain.starts_with("https://")
+                {
                     domain.to_string()
                 } else {
                     format!("https://{}", domain)
@@ -207,23 +245,31 @@ async fn main() {
     let app = Router::new()
         .nest("/api", api_router)
         .fallback_service(
-            tower_http::services::ServeDir::new("../web-app/dist")
-                .fallback(tower_http::services::ServeFile::new("../web-app/dist/index.html")),
+            tower_http::services::ServeDir::new("../web-app/dist").fallback(
+                tower_http::services::ServeFile::new("../web-app/dist/index.html"),
+            ),
         )
         .with_state(state)
         .layer(cors)
-        .layer(axum::middleware::map_response(|mut res: axum::response::Response| async {
-            res.headers_mut().insert(
-                axum::http::header::HeaderName::from_static("cross-origin-resource-policy"),
-                axum::http::header::HeaderValue::from_static("cross-origin"),
-            );
-            res
-        }))
+        .layer(axum::middleware::map_response(
+            |mut res: axum::response::Response| async {
+                res.headers_mut().insert(
+                    axum::http::header::HeaderName::from_static("cross-origin-resource-policy"),
+                    axum::http::header::HeaderValue::from_static("cross-origin"),
+                );
+                res
+            },
+        ))
         .layer(axum::extract::DefaultBodyLimit::max(4 * 1024 * 1024 * 1024));
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     tracing::info!("Server listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }

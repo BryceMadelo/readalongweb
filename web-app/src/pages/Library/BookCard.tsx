@@ -1,25 +1,28 @@
 import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, Star, Trash2, Edit2, Play, Pause, CheckCircle, Lock, Clock, FileAudio } from 'lucide-react';
+import { BookOpen, Star, Trash2, Edit2, Play, Pause, CheckCircle, Lock, Clock, FileAudio, Camera } from 'lucide-react';
 import { useAlignment } from '../../context/AlignmentContext';
-import { type BookMeta, updateBookMeta, toggleFavorite, saveBook, getBookData, addHistory } from '../../storage/db';
-import { fetchWithAuth, getApiToken } from '../../utils/api';
+import { type BookMeta, updateBookMeta, toggleFavorite, saveBook, getBookData, addHistory, initDB } from '../../storage/db';
+import { fetchWithAuth, getFullImageUrl } from '../../utils/api';
 
 interface BookCardProps {
   book: BookMeta;
   onDelete: (id: string) => void;
   onUpdate: (id: string, title: string, author: string) => void;
   onFavoriteChange: (id: string, isFav: boolean) => void;
+  onCoverChange: (id: string, coverImage: string) => void;
 }
 
-export function BookCard({ book, onDelete, onUpdate, onFavoriteChange }: BookCardProps) {
+export function BookCard({ book, onDelete, onUpdate, onFavoriteChange, onCoverChange }: BookCardProps) {
   const { getJob, pauseJob, resumeJob, startJob } = useAlignment();
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const coverInputRef = useRef<HTMLInputElement>(null);
 
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(book.title);
   const [editAuthor, setEditAuthor] = useState(book.author);
+  const [isUploadingCover, setIsUploadingCover] = useState(false);
 
   
   // Use state for favorite to update instantly
@@ -84,6 +87,49 @@ export function BookCard({ book, onDelete, onUpdate, onFavoriteChange }: BookCar
     onFavoriteChange(book.id, newFav);
   };
 
+  const handleCoverUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploadingCover(true);
+    try {
+      const formData = new FormData();
+      formData.append('cover', file);
+      const API_URL = import.meta.env.VITE_API_URL || '/api';
+      const res = await fetchWithAuth(`${API_URL}/books/${book.id}/cover`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) {
+        alert("Failed to upload cover to server.");
+        return;
+      }
+
+      // Cache-bust so the new cover shows immediately instead of the
+      // browser's cached copy at the same URL.
+      const newCoverPath = `/api/books/${book.id}/cover?v=${Date.now()}`;
+
+      // Persist locally so it's there on next load even before the next
+      // full server sync in Library.tsx.
+      const db = await initDB();
+      const tx = db.transaction('books', 'readwrite');
+      const existing = await tx.store.get(book.id);
+      if (existing) {
+        existing.coverImage = newCoverPath;
+        await tx.store.put(existing);
+      }
+      await tx.done;
+
+      onCoverChange(book.id, newCoverPath);
+    } catch (err) {
+      console.error(err);
+      alert("Error uploading cover.");
+    } finally {
+      setIsUploadingCover(false);
+      if (coverInputRef.current) coverInputRef.current.value = '';
+    }
+  };
+
   const handleDelete = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -146,7 +192,7 @@ export function BookCard({ book, onDelete, onUpdate, onFavoriteChange }: BookCar
           position: 'relative',
           overflow: 'hidden',
           background: book.coverImage 
-            ? `url(${book.coverImage.startsWith('/api') ? `${import.meta.env.VITE_API_URL || '/api'}/books/${book.id}/cover?token=${getApiToken()}` : book.coverImage}) center/cover` 
+            ? `url(${getFullImageUrl(book.coverImage)}) center/cover` 
             : 'linear-gradient(135deg, var(--accent-light), var(--accent-primary))'
         }}>
           {!book.coverImage && <BookOpen size={48} style={{ color: 'white', opacity: 0.8 }} />}
@@ -163,8 +209,34 @@ export function BookCard({ book, onDelete, onUpdate, onFavoriteChange }: BookCar
               transition: 'all 0.2s ease'
             }}
           >
-            <Star size={16} fill={isFavorite ? '#F59E0B' : 'none'} />
+            <Star size={16} strokeWidth={1} color="#111" fill={isFavorite ? '#F59E0B' : '#fff'} />
           </button>
+
+          {/* Edit Cover Button - Top Right */}
+          <button
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); coverInputRef.current?.click(); }}
+            disabled={isUploadingCover}
+            title="Change Cover"
+            style={{
+              position: 'absolute', top: '12px', right: '12px',
+              background: 'var(--glass-bg)', backdropFilter: 'blur(8px)',
+              border: '1px solid rgba(255,255,255,0.2)', borderRadius: '50%',
+              width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'white', cursor: isUploadingCover ? 'wait' : 'pointer', zIndex: 5,
+              opacity: isUploadingCover ? 0.6 : 1,
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <Camera size={16} strokeWidth={1} color="#111" />
+          </button>
+          <input
+            type="file"
+            ref={coverInputRef}
+            onChange={handleCoverUpload}
+            onClick={e => e.stopPropagation()}
+            accept="image/png, image/jpeg, image/webp"
+            style={{ display: 'none' }}
+          />
         </div>
 
         {/* Toolbar below image */}
@@ -177,7 +249,7 @@ export function BookCard({ book, onDelete, onUpdate, onFavoriteChange }: BookCar
             >
               <FileAudio size={16} />
             </button>
-            <input type="file" ref={fileInputRef} onChange={handleAudioUpload} onClick={e => e.stopPropagation()} accept="audio/mpeg, audio/mp3, audio/m4a" style={{ display: 'none' }} />
+            <input type="file" ref={fileInputRef} onChange={handleAudioUpload} onClick={e => e.stopPropagation()} accept="audio/mpeg, audio/mp3, audio/m4a, audio/m4b, .m4b" style={{ display: 'none' }} />
           </div>
 
           {/* Edit Button */}

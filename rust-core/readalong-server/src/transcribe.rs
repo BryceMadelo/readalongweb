@@ -133,31 +133,34 @@ pub fn transcribe_audio_chunk(
         .full(params, audio_data)
         .map_err(|e| format!("Failed to run whisper: {}", e))?;
 
-    let num_segments = state
-        .full_n_segments()
-        .map_err(|e| format!("Failed to get segments: {}", e))?;
+    let num_segments = state.full_n_segments();
     tracing::info!("Transcription chunk complete: {} segments", num_segments);
 
     let mut chunks = Vec::new();
 
     for i in 0..num_segments {
-        let text = state.full_get_segment_text(i).map_err(|e| e.to_string())?;
-        let t0 = state.full_get_segment_t0(i).map_err(|e| e.to_string())?;
-        let t1 = state.full_get_segment_t1(i).map_err(|e| e.to_string())?;
+        let segment = match state.get_segment(i) {
+            Some(s) => s,
+            None => continue,
+        };
+        let text = segment.to_str().unwrap_or("").to_string();
+        let t0 = segment.start_timestamp();
+        let t1 = segment.end_timestamp();
 
         // Whisper time is in 10ms units (centiseconds), offset by time_offset_sec
         let start_sec = time_offset_sec + (t0 as f32 / 100.0);
         let end_sec = time_offset_sec + (t1 as f32 / 100.0);
 
-        let num_tokens = state.full_n_tokens(i).unwrap_or(0);
+        let num_tokens = segment.n_tokens();
         let mut words = Vec::new();
 
         let mut current_word = String::new();
         let mut current_word_start = -1.0;
 
         for j in 0..num_tokens {
-            if let Ok(token_data) = state.full_get_token_data(i, j) {
-                if let Ok(token_text) = state.full_get_token_text(i, j) {
+            if let Some(token) = segment.get_token(j) {
+                let token_data = token.token_data();
+                if let Ok(token_text) = token.to_str() {
                     let token_t0 = time_offset_sec + (token_data.t0 as f32 / 100.0);
                     let token_t1 = time_offset_sec + (token_data.t1 as f32 / 100.0);
 

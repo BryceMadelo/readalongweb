@@ -132,6 +132,10 @@ export default function Library() {
     setBooks(books.map(b => b.id === bookId ? { ...b, isFavorite } : b));
   };
 
+  const handleCoverChange = (bookId: string, coverImage: string) => {
+    setBooks(books.map(b => b.id === bookId ? { ...b, coverImage } : b));
+  };
+
   const filteredBooks = books.filter(b => {
     if (activeFilter === 'All Books') return true;
     if (activeFilter === 'In Progress') return b.progress > 0 && (!b.durationMs || b.progress < b.durationMs * 0.95);
@@ -219,6 +223,7 @@ export default function Library() {
                     onDelete={handleDelete}
                     onUpdate={handleUpdateMeta}
                     onFavoriteChange={handleFavoriteChange}
+                    onCoverChange={handleCoverChange}
                   />
                 ))}
               </div>

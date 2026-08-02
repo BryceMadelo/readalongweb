@@ -10,7 +10,7 @@ import { ReaderSettings } from './ReaderSettings';
 import { type ReaderSettingsState, defaultSettings } from './types';
 import { ReaderTOC } from './ReaderTOC';
 import { TTSControls } from '../../components/TTSControls';
-import { fetchWithAuth } from '../../utils/api';
+import { fetchWithAuth, getFullImageUrl } from '../../utils/api';
 
 export default function Reader() {
   const { id } = useParams<{ id: string }>();
@@ -653,7 +653,7 @@ export default function Reader() {
               onTimeUpdate={handleTimeUpdate}
               seekToMs={seekToMs}
               bookTitle={meta.title}
-              bookCover={meta.coverImage}
+              bookCover={getFullImageUrl(meta.coverImage)}
               onPlay={() => isPlayingRef.current = true}
               onPause={() => isPlayingRef.current = false}
             />

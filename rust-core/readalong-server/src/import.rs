@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{Multipart, State, Extension},
+    extract::{Extension, Multipart, State},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -8,9 +8,9 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+use crate::AppState;
 use crate::align::FuzzyAligner;
 use crate::transcribe::{AudioChunker, extract_audio_to_wav, transcribe_audio_chunk};
-use crate::AppState;
 
 #[derive(Serialize)]
 pub struct ImportResponse {
@@ -68,7 +68,7 @@ pub async fn handle_get_sync_map(
     AxumPath(book_id): AxumPath<String>,
 ) -> impl IntoResponse {
     let db_lock = app_state.db.lock().unwrap();
-    
+
     match db_lock.get_sync_map(&user_id.0, &book_id) {
         Ok(points) => (StatusCode::OK, Json(points)).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "Sync map not found").into_response(),
@@ -119,7 +119,8 @@ pub async fn handle_edit(
     Json(payload): Json<EditBookRequest>,
 ) -> impl IntoResponse {
     let db_lock = app_state.db.lock().unwrap();
-    if let Err(e) = db_lock.update_book_meta(&user_id.0, &book_id, &payload.title, &payload.author) {
+    if let Err(e) = db_lock.update_book_meta(&user_id.0, &book_id, &payload.title, &payload.author)
+    {
         tracing::error!("Failed to edit book {}: {}", book_id, e);
         return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
     }
@@ -132,7 +133,7 @@ pub async fn handle_delete_book(
     AxumPath(book_id): AxumPath<String>,
 ) -> impl IntoResponse {
     let db_lock = app_state.db.lock().unwrap();
-    
+
     // Attempt to clean up files
     if let Ok((epub, audio)) = db_lock.get_book_paths(&user_id.0, &book_id) {
         let _ = std::fs::remove_file(&epub);
@@ -143,10 +144,12 @@ pub async fn handle_delete_book(
         tracing::error!("Failed to delete book {}: {}", book_id, e);
         return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
     }
-    
+
     // Attempt to remove directory
     let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| ".".to_string());
-    let dir_path = std::path::Path::new(&data_dir).join("tmp_uploads").join(&book_id);
+    let dir_path = std::path::Path::new(&data_dir)
+        .join("tmp_uploads")
+        .join(&book_id);
     let _ = std::fs::remove_dir_all(&dir_path);
 
     (StatusCode::OK, "Deleted").into_response()
@@ -179,13 +182,15 @@ pub async fn handle_upload_cover(
 ) -> impl IntoResponse {
     let mut cover_path: Option<String> = None;
     let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| ".".to_string());
-    
+
     while let Some(field) = multipart.next_field().await.unwrap_or(None) {
         let name = field.name().unwrap_or("").to_string();
         if name == "cover" {
             let bytes = field.bytes().await.unwrap_or_default();
             if bytes.len() > 0 {
-                let dir_path = std::path::Path::new(&data_dir).join("tmp_uploads").join(&book_id);
+                let dir_path = std::path::Path::new(&data_dir)
+                    .join("tmp_uploads")
+                    .join(&book_id);
                 std::fs::create_dir_all(&dir_path).ok();
                 let path = dir_path.join("cover.jpg");
                 if let Ok(_) = std::fs::write(&path, &bytes) {
@@ -194,7 +199,7 @@ pub async fn handle_upload_cover(
             }
         }
     }
-    
+
     if let Some(path) = cover_path {
         let db_lock = app_state.db.lock().unwrap();
         if let Err(e) = db_lock.set_cover_image(&user_id.0, &book_id, &path) {
@@ -215,9 +220,11 @@ pub async fn handle_get_cover(
 ) -> impl IntoResponse {
     let cover_path = {
         let db_lock = app_state.db.lock().unwrap();
-        db_lock.get_cover_image(&user_id.0, &book_id).unwrap_or(None)
+        db_lock
+            .get_cover_image(&user_id.0, &book_id)
+            .unwrap_or(None)
     };
-    
+
     if let Some(path) = cover_path {
         match tower::ServiceExt::oneshot(tower_http::services::ServeFile::new(&path), req).await {
             Ok(res) => res.into_response(),
@@ -226,6 +233,184 @@ pub async fn handle_get_cover(
     } else {
         (StatusCode::NOT_FOUND, "Cover not found").into_response()
     }
+}
+
+pub async fn handle_get_content(
+    Extension(user_id): Extension<crate::auth::UserId>,
+    State(app_state): State<AppState>,
+    AxumPath(book_id): AxumPath<String>,
+) -> impl IntoResponse {
+    let epub_path_str = {
+        let db_lock = app_state.db.lock().unwrap();
+        match db_lock.get_book_paths(&user_id.0, &book_id) {
+            Ok((epub, _)) => epub,
+            Err(_) => return (StatusCode::NOT_FOUND, "Book not found").into_response(),
+        }
+    };
+
+    let epub_bytes = match std::fs::read(&epub_path_str) {
+        Ok(b) => b,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read EPUB").into_response();
+        }
+    };
+
+    let mut archive = match zip::ZipArchive::new(std::io::Cursor::new(epub_bytes.as_slice())) {
+        Ok(a) => a,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to parse EPUB zip",
+            )
+                .into_response();
+        }
+    };
+
+    let opf_path = match readalong_core::epub::find_opf_path(&mut archive) {
+        Ok(p) => p,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Invalid EPUB format").into_response();
+        }
+    };
+
+    let opf_xml = match readalong_core::epub::read_zip_entry_as_string(&mut archive, &opf_path) {
+        Ok(s) => s,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Invalid EPUB format").into_response();
+        }
+    };
+
+    let spine = match readalong_core::epub::parse_opf_spine(&opf_xml) {
+        Ok(s) => s,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Invalid EPUB format").into_response();
+        }
+    };
+
+    let mut title = None;
+    let mut author = None;
+    if let Ok(doc) = roxmltree::Document::parse(&opf_xml) {
+        if let Some(metadata) = doc
+            .descendants()
+            .find(|n| n.tag_name().name() == "metadata")
+        {
+            for child in metadata.children() {
+                if child.tag_name().name() == "title" {
+                    title = child.text().map(|s| s.to_string());
+                } else if child.tag_name().name() == "creator" {
+                    author = child.text().map(|s| s.to_string());
+                }
+            }
+        }
+    }
+
+    let opf_dir = if let Some(idx) = opf_path.rfind('/') {
+        &opf_path[..idx]
+    } else {
+        ""
+    };
+    let mut all_paragraphs = Vec::new();
+
+    for item in spine {
+        let full_path = readalong_core::epub::resolve_opf_relative(opf_dir, &item.href);
+        let chapter_dir = if let Some(idx) = full_path.rfind('/') {
+            &full_path[..idx]
+        } else {
+            ""
+        };
+
+        let html = match readalong_core::epub::read_zip_entry_as_string(&mut archive, &full_path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        let mut blocks =
+            readalong_core::content::parse_chapter_html(&html, title.as_deref(), author.as_deref());
+        for block in &mut blocks {
+            block.id = format!("{}_{}", item.id, block.id);
+
+            // Format image src to point to our new resource endpoint so mobile can download it natively
+            if block.tag == "img" {
+                if let Some(src) = &block.src {
+                    let img_path = readalong_core::epub::resolve_opf_relative(chapter_dir, src);
+                    // Update the src to point to the endpoint we are about to create below
+                    block.src = Some(format!("/api/books/{}/resource/{}", book_id, img_path));
+                }
+            }
+        }
+        all_paragraphs.append(&mut blocks);
+    }
+
+    (StatusCode::OK, Json(all_paragraphs)).into_response()
+}
+
+pub async fn handle_get_resource(
+    Extension(user_id): Extension<crate::auth::UserId>,
+    State(app_state): State<AppState>,
+    // This extracts the book_id and the dynamic wildcard path to the image inside the EPUB
+    AxumPath((book_id, asset_path)): AxumPath<(String, String)>,
+) -> impl IntoResponse {
+    let epub_path_str = {
+        let db_lock = app_state.db.lock().unwrap();
+        match db_lock.get_book_paths(&user_id.0, &book_id) {
+            Ok((epub, _)) => epub,
+            Err(_) => return (StatusCode::NOT_FOUND, "Book not found").into_response(),
+        }
+    };
+
+    let epub_bytes = match std::fs::read(&epub_path_str) {
+        Ok(b) => b,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read EPUB").into_response();
+        }
+    };
+
+    let mut archive = match zip::ZipArchive::new(std::io::Cursor::new(epub_bytes.as_slice())) {
+        Ok(a) => a,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to parse EPUB zip",
+            )
+                .into_response();
+        }
+    };
+
+    // Use the zip index finder from readalong_core to safely handle spaces/case issues
+    let idx = match readalong_core::epub::find_zip_index(&mut archive, &asset_path) {
+        Some(i) => i,
+        None => return (StatusCode::NOT_FOUND, "Resource not found in EPUB").into_response(),
+    };
+
+    let mut file = match archive.by_index(idx) {
+        Ok(f) => f,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read resource").into_response();
+        }
+    };
+
+    let mut buffer = Vec::new();
+    use std::io::Read;
+    if file.read_to_end(&mut buffer).is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to read resource bytes",
+        )
+            .into_response();
+    }
+
+    // Assign standard image mime types based on extension
+    let content_type = if asset_path.to_lowercase().ends_with(".png") {
+        "image/png"
+    } else if asset_path.to_lowercase().ends_with(".gif") {
+        "image/gif"
+    } else if asset_path.to_lowercase().ends_with(".svg") {
+        "image/svg+xml"
+    } else {
+        "image/jpeg"
+    };
+
+    ([(axum::http::header::CONTENT_TYPE, content_type)], buffer).into_response()
 }
 
 pub async fn handle_import(
@@ -254,7 +439,7 @@ pub async fn handle_import(
 
     while let Ok(Some(mut field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
-        
+
         if name == "title" {
             if let Ok(text) = field.text().await {
                 title = text;
@@ -345,7 +530,7 @@ pub async fn handle_import(
 
     let audio_path = audio_path.unwrap();
     let book_id_clone = book_id.clone();
-    
+
     {
         let db_lock = app_state.db.lock().unwrap();
         if let Err(e) = db_lock.insert_book(
@@ -390,11 +575,12 @@ pub async fn handle_import(
         // Update database status: Processing (in a real app, we'd have a status column)
         {
             let db_lock = app_state.db.lock().unwrap();
-            if let Err(e) = db_lock.update_book_status(
-                &book_id_clone,
-                "Processing...",
-            ) {
-                tracing::error!("Failed to update book status to Processing... {}: {}", book_id_clone, e);
+            if let Err(e) = db_lock.update_book_status(&book_id_clone, "Processing...") {
+                tracing::error!(
+                    "Failed to update book status to Processing... {}: {}",
+                    book_id_clone,
+                    e
+                );
             }
         }
 
@@ -605,7 +791,12 @@ pub async fn handle_import(
             };
 
             if let Some((audio_data, time_offset_sec)) = chunk_res {
-                tracing::info!("Processing chunk {} at offset {:.1}s ({} samples)", chunk_index, time_offset_sec, audio_data.len());
+                tracing::info!(
+                    "Processing chunk {} at offset {:.1}s ({} samples)",
+                    chunk_index,
+                    time_offset_sec,
+                    audio_data.len()
+                );
                 let asr_chunks =
                     match transcribe_audio_chunk(&audio_data, time_offset_sec, &mut state) {
                         Ok(c) => c,
@@ -627,16 +818,15 @@ pub async fn handle_import(
                 let current_min = total_time_sec / 60.0;
                 let total_min = total_audio_duration_sec / 60.0;
                 let status_msg = format!("Processing|{}|{}", current_min, total_min);
-                
+
                 {
                     let db_lock = app_state.db.lock().unwrap();
-                    if let Err(e) = db_lock.update_book_status(
-                        &book_id_clone,
-                        &status_msg,
-                    ) {
+                    if let Err(e) = db_lock.update_book_status(&book_id_clone, &status_msg) {
                         tracing::error!("Failed to update partial book status: {}", e);
                     }
-                    if let Err(e) = db_lock.save_sync_map(&user_id_clone, &book_id_clone, &current_sync) {
+                    if let Err(e) =
+                        db_lock.save_sync_map(&user_id_clone, &book_id_clone, &current_sync)
+                    {
                         tracing::error!("Failed to save partial sync map: {}", e);
                     }
                 }
@@ -771,7 +961,10 @@ pub async fn handle_add_audio(
 
     // Kick off alignment (same pipeline as handle_import)
     tokio::task::spawn_blocking(move || {
-        tracing::info!("Starting processing task for re-align book {}", book_id_clone);
+        tracing::info!(
+            "Starting processing task for re-align book {}",
+            book_id_clone
+        );
 
         loop {
             let mut is_queued = false;
@@ -802,7 +995,11 @@ pub async fn handle_add_audio(
                 audio_path.to_str().unwrap(),
                 "Processing...",
             ) {
-                tracing::error!("Failed to update book state for re-align {}: {}", book_id_clone, e);
+                tracing::error!(
+                    "Failed to update book state for re-align {}: {}",
+                    book_id_clone,
+                    e
+                );
             }
         }
 
@@ -823,72 +1020,130 @@ pub async fn handle_add_audio(
 
         let epub_bytes = match std::fs::read(&epub_path) {
             Ok(b) => b,
-            Err(e) => { tracing::error!("Failed to read epub: {}", e); set_error("Failed to read EPUB"); return; }
+            Err(e) => {
+                tracing::error!("Failed to read epub: {}", e);
+                set_error("Failed to read EPUB");
+                return;
+            }
         };
 
         let mut archive = match zip::ZipArchive::new(std::io::Cursor::new(&epub_bytes)) {
             Ok(a) => a,
-            Err(e) => { tracing::error!("Failed to open epub as zip: {}", e); set_error("Failed to parse EPUB"); return; }
+            Err(e) => {
+                tracing::error!("Failed to open epub as zip: {}", e);
+                set_error("Failed to parse EPUB");
+                return;
+            }
         };
 
         let opf_path = match readalong_core::epub::find_opf_path(&mut archive) {
             Ok(p) => p,
-            Err(e) => { tracing::error!("Failed to find opf: {}", e); set_error("Invalid EPUB format"); return; }
+            Err(e) => {
+                tracing::error!("Failed to find opf: {}", e);
+                set_error("Invalid EPUB format");
+                return;
+            }
         };
 
-        let opf_xml = match readalong_core::epub::read_zip_entry_as_string(&mut archive, &opf_path) {
+        let opf_xml = match readalong_core::epub::read_zip_entry_as_string(&mut archive, &opf_path)
+        {
             Ok(s) => s,
-            Err(e) => { tracing::error!("Failed to read opf xml: {}", e); set_error("Invalid EPUB format"); return; }
+            Err(e) => {
+                tracing::error!("Failed to read opf xml: {}", e);
+                set_error("Invalid EPUB format");
+                return;
+            }
         };
 
         let spine = match readalong_core::epub::parse_opf_spine(&opf_xml) {
             Ok(s) => s,
-            Err(e) => { tracing::error!("Failed to parse spine: {}", e); set_error("Invalid EPUB format"); return; }
+            Err(e) => {
+                tracing::error!("Failed to parse spine: {}", e);
+                set_error("Invalid EPUB format");
+                return;
+            }
         };
 
         let mut title = None;
         let mut author = None;
         if let Ok(doc) = roxmltree::Document::parse(&opf_xml) {
-            if let Some(metadata) = doc.descendants().find(|n| n.tag_name().name() == "metadata") {
+            if let Some(metadata) = doc
+                .descendants()
+                .find(|n| n.tag_name().name() == "metadata")
+            {
                 for child in metadata.children() {
-                    if child.tag_name().name() == "title" { title = child.text().map(|s| s.to_string()); }
-                    else if child.tag_name().name() == "creator" { author = child.text().map(|s| s.to_string()); }
+                    if child.tag_name().name() == "title" {
+                        title = child.text().map(|s| s.to_string());
+                    } else if child.tag_name().name() == "creator" {
+                        author = child.text().map(|s| s.to_string());
+                    }
                 }
             }
         }
 
-        let opf_dir = if let Some(idx) = opf_path.rfind('/') { &opf_path[..idx] } else { "" };
+        let opf_dir = if let Some(idx) = opf_path.rfind('/') {
+            &opf_path[..idx]
+        } else {
+            ""
+        };
 
         let mut all_paragraphs = Vec::new();
         for item in spine {
             let full_path = readalong_core::epub::resolve_opf_relative(opf_dir, &item.href);
-            let html = match readalong_core::epub::read_zip_entry_as_string(&mut archive, &full_path) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            let mut blocks = readalong_core::content::parse_chapter_html(&html, title.as_deref(), author.as_deref());
-            for block in &mut blocks { block.id = format!("{}_{}", item.id, block.id); }
+            let html =
+                match readalong_core::epub::read_zip_entry_as_string(&mut archive, &full_path) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+            let mut blocks = readalong_core::content::parse_chapter_html(
+                &html,
+                title.as_deref(),
+                author.as_deref(),
+            );
+            for block in &mut blocks {
+                block.id = format!("{}_{}", item.id, block.id);
+            }
             all_paragraphs.append(&mut blocks);
         }
 
-        let actual_model_path = if model_path.exists() { model_path } else if fallback_model.exists() { fallback_model } else {
-            set_error("Whisper model not found"); return;
+        let actual_model_path = if model_path.exists() {
+            model_path
+        } else if fallback_model.exists() {
+            fallback_model
+        } else {
+            set_error("Whisper model not found");
+            return;
         };
 
         let mut chunker = match AudioChunker::new(&wav_path) {
             Ok(c) => c,
-            Err(e) => { tracing::error!("Audio chunker failed: {}", e); set_error("Audio processing failed"); return; }
+            Err(e) => {
+                tracing::error!("Audio chunker failed: {}", e);
+                set_error("Audio processing failed");
+                return;
+            }
         };
 
         let ctx_params = whisper_rs::WhisperContextParameters::default();
-        let ctx = match whisper_rs::WhisperContext::new_with_params(actual_model_path.to_str().unwrap(), ctx_params) {
+        let ctx = match whisper_rs::WhisperContext::new_with_params(
+            actual_model_path.to_str().unwrap(),
+            ctx_params,
+        ) {
             Ok(c) => c,
-            Err(e) => { tracing::error!("Whisper load failed: {}", e); set_error("Whisper model load failed"); return; }
+            Err(e) => {
+                tracing::error!("Whisper load failed: {}", e);
+                set_error("Whisper model load failed");
+                return;
+            }
         };
 
         let mut state = match ctx.create_state() {
             Ok(s) => s,
-            Err(e) => { tracing::error!("Whisper state failed: {}", e); set_error("Whisper state failed"); return; }
+            Err(e) => {
+                tracing::error!("Whisper state failed: {}", e);
+                set_error("Whisper state failed");
+                return;
+            }
         };
 
         let mut aligner = FuzzyAligner::new(all_paragraphs);
@@ -901,23 +1156,39 @@ pub async fn handle_add_audio(
                 let mut is_paused = false;
                 if let Ok(db_lock) = app_state.db.lock() {
                     if let Ok(status) = db_lock.get_book_status(&book_id_clone) {
-                        if status == "Paused" { is_paused = true; }
+                        if status == "Paused" {
+                            is_paused = true;
+                        }
                     }
                 }
-                if is_paused { std::thread::sleep(std::time::Duration::from_secs(1)); continue; }
+                if is_paused {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    continue;
+                }
             }
 
             chunk_index += 1;
             let chunk_res = match chunker.next_chunk(180) {
                 Ok(c) => c,
-                Err(e) => { tracing::error!("Chunk read failed: {}", e); set_error("Audio read failed"); has_error = true; break; }
+                Err(e) => {
+                    tracing::error!("Chunk read failed: {}", e);
+                    set_error("Audio read failed");
+                    has_error = true;
+                    break;
+                }
             };
 
             if let Some((audio_data, time_offset_sec)) = chunk_res {
-                let asr_chunks = match transcribe_audio_chunk(&audio_data, time_offset_sec, &mut state) {
-                    Ok(c) => c,
-                    Err(e) => { tracing::error!("Transcription failed chunk {}: {}", chunk_index, e); set_error("Transcription failed"); has_error = true; break; }
-                };
+                let asr_chunks =
+                    match transcribe_audio_chunk(&audio_data, time_offset_sec, &mut state) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::error!("Transcription failed chunk {}: {}", chunk_index, e);
+                            set_error("Transcription failed");
+                            has_error = true;
+                            break;
+                        }
+                    };
                 aligner.add_chunks(asr_chunks);
                 aligner.align_current_buffer(false);
 
@@ -937,7 +1208,9 @@ pub async fn handle_add_audio(
             }
         }
 
-        if has_error { return; }
+        if has_error {
+            return;
+        }
 
         aligner.align_current_buffer(true);
         aligner.finish();
